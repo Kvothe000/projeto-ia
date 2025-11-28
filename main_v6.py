@@ -1,4 +1,4 @@
-# Binance/main_v6.py - O PREDAOR COMPLETO (IA V6 + ATR + DASHBOARD)
+# Binance/main_v7.py - O GESTOR DE 1% DIÁRIO (FUSÃO V6 + GESTÃO)
 import time
 import pandas_ta as ta
 from binance_connector import BinanceConnector
@@ -6,179 +6,189 @@ from ai_trader_v6 import TraderIAV6
 from manager import GerenciadorEstado
 from scanner import ScannerCrypto
 
-# --- CONFIGURAÇÕES DE RISCO ---
-VALOR_APOSTA_USDT = 200   # Valor financeiro por trade
-ALAVANCAGEM = 5           
-ATR_STOP_MULT = 2.0       # Stop Loss = 2x ATR (Dinâmico)
-ATR_TAKE_MULT = 3.0       # Alvo = 3x ATR (Dinâmico)
-TIMEFRAME = "15m"
-INTERVALO_RESCAN = 30 * 60 # 30 Minutos
+class DailyGoalBot:
+    def __init__(self):
+        # --- CONFIGURAÇÕES DE OURO (1% DIÁRIO) ---
+        self.META_DIARIA_PCT = 0.015    # Meta: 1.5% (para garantir 1% líquido)
+        self.STOP_DIARIO_PCT = -0.01    # Stop Diário: -1% (Trava de segurança)
+        self.VALOR_BANCA = 200          # Sua banca total alocada
+        self.ALAVANCAGEM = 5
+        
+        # Gestão de Trade
+        self.VALOR_APOSTA = self.VALOR_BANCA * self.ALAVANCAGEM # Power
+        self.GATILHO_TRAILING = 0.005   # Ativa trailing com 0.5% de lucro
+        self.CALLBACK_TRAILING = 0.002  # Devolve 0.2% e sai
+        
+        # Componentes
+        self.con = BinanceConnector()
+        self.cerebro = TraderIAV6()
+        self.gerenciador = GerenciadorEstado()
+        self.scanner = ScannerCrypto()
+        
+        # Estado do Dia
+        self.lucro_acumulado = 0.0
+        self.trades_hoje = 0
+        self.reset_dia()
 
-def main():
-    print("🤖 INICIANDO BOT V6 (INTEGRADO AO DASHBOARD)...")
-    
-    con = BinanceConnector()
-    cerebro = TraderIAV6()
-    gerenciador = GerenciadorEstado()
-    scanner = ScannerCrypto()
-    
-    # Estado
-    lista_alvos = []
-    ultimo_scan = 0
-    em_posicao = False
-    par_em_operacao = None
-    
-    # Dados do Trade Aberto
-    lado_trade = None
-    preco_entrada = 0
-    preco_stop_inicial = 0
-    preco_alvo_inicial = 0
-    
-    # Validação
-    try:
-        con.client.ping()
-        print("✅ Conexão Binance OK")
-    except:
-        print("❌ Falha na Conexão")
-        return
+    def reset_dia(self):
+        # Lógica simples: reseta se mudar o dia (pode melhorar depois)
+        self.ultimo_dia = time.localtime().tm_mday
+        self.lucro_acumulado = 0.0
+        self.trades_hoje = 0
+        print("☀️ Novo dia iniciado! Metas resetadas.")
 
-    while True:
-        try:
-            agora = time.time()
-            relatorio_ciclo = [] # Para o Dashboard
+    def verificar_metas(self):
+        # Verifica virada do dia
+        if time.localtime().tm_mday != self.ultimo_dia:
+            self.reset_dia()
+            
+        # Verifica Meta Batida
+        pct_hoje = self.lucro_acumulado / self.VALOR_BANCA
+        if pct_hoje >= self.META_DIARIA_PCT:
+            print(f"🎉 META BATIDA! Lucro: {pct_hoje*100:.2f}%. Bot indo dormir...")
+            return False # Para o bot
+            
+        # Verifica Stop Loss Diário
+        if pct_hoje <= self.STOP_DIARIO_PCT:
+            print(f"💀 STOP DIÁRIO! Prejuízo: {pct_hoje*100:.2f}%. Bot parando por hoje.")
+            return False # Para o bot
+            
+        print(f"📊 Status Dia: {pct_hoje*100:.2f}% (Meta: {self.META_DIARIA_PCT*100}%)")
+        return True # Continua operando
 
-            # --- 1. SCANNER (Se livre) ---
-            if not em_posicao and (agora - ultimo_scan > INTERVALO_RESCAN):
-                print("\n🛰️ Atualizando Radar V6...")
-                lista_alvos = scanner.mostrar_top_oportunidades()
-                if not lista_alvos: lista_alvos = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'WLDUSDT', '1000PEPEUSDT']
-                ultimo_scan = agora
+    def filtro_rsi(self, df, sinal):
+        """Filtro extra sugerido pelo colega (Evita comprar topo)"""
+        df.ta.rsi(length=14, append=True)
+        rsi = df.iloc[-1]['RSI_14']
+        
+        if sinal == "BUY" and rsi > 70:
+            return False, f"RSI Esticado ({rsi:.0f})"
+        if sinal == "SELL" and rsi < 30:
+            return False, f"RSI Esticado ({rsi:.0f})"
+            
+        return True, "OK"
 
-            # Decide quem analisar (Lista ou Foco no Trade)
-            targets = [par_em_operacao] if em_posicao else lista_alvos
+    def run(self):
+        print("🤖 BOT V7 INICIADO: MODO GESTOR DE 1%...")
+        
+        em_posicao = False
+        par_atual = None
+        ultimo_scan = 0
+        
+        # Dados do Trade Aberto
+        lado_trade = None
+        preco_entrada = 0
+        max_preco = 0
+        
+        while True:
+            try:
+                if not self.verificar_metas():
+                    time.sleep(3600) # Dorme 1h se bateu meta
+                    continue
 
-            # --- 2. LOOP DE ANÁLISE ---
-            for par_atual in targets:
-                time.sleep(1) # Respeita API
+                agora = time.time()
 
-                # Baixa dados
-                df = con.buscar_candles(par_atual, TIMEFRAME, limit=500)
+                # --- 1. SCANNER (A cada 10 min ou se livre) ---
+                if not em_posicao and (agora - ultimo_scan > 600):
+                    print("\n🛰️ Atualizando Radar (10min)...")
+                    lista = self.scanner.mostrar_top_oportunidades()
+                    if not lista: lista = ['WLDUSDT', '1000PEPEUSDT'] # Fallback
+                    par_atual = lista[0] # Foca na #1
+                    ultimo_scan = agora
+                    print(f"🔭 Alvo: {par_atual}")
+
+                # --- 2. ANÁLISE ---
+                time.sleep(1)
+                df = self.con.buscar_candles(par_atual, "15m", limit=500)
                 if df is None: continue
-                preco_atual = df.iloc[-1]['close']
+                preco = df.iloc[-1]['close']
 
-                # Calcula ADX apenas para mostrar no Dashboard (Visual)
-                df.ta.adx(length=14, append=True)
-                adx_atual = df.iloc[-1]['ADX_14']
-
-                # --- INTELIGÊNCIA V6 ---
-                sinal, confianca, atr_pct = cerebro.analisar_mercado(df)
-
-                # --- CONEXÃO COM DASHBOARD ---
-                status_moeda = {
-                    "par": par_atual,
-                    "preco": preco_atual,
-                    "adx": round(adx_atual, 1),
-                    "sinal": sinal,
-                    "confianca": round(confianca * 100, 1),
-                    "status_adx": "V6" # Marca d'água da versão
-                }
-                relatorio_ciclo.append(status_moeda)
+                # IA V6 (Com Contexto)
+                sinal, confianca, atr_pct = self.cerebro.analisar_mercado(df)
                 
-                # Log Terminal
+                # Visual
                 cor = "\033[93m"
                 if sinal == "BUY": cor = "\033[92m"
                 if sinal == "SELL": cor = "\033[91m"
-                reset = "\033[0m"
-                print(f"👀 {par_atual:<12} | IA: {cor}{sinal} ({confianca*100:.1f}%){reset} | ATR: {atr_pct:.2f}%")
+                print(f"🧠 {par_atual}: {cor}{sinal} ({confianca*100:.1f}%){'\033[0m'} | ATR: {atr_pct:.2f}%")
 
-                # Registra histórico visual se for relevante
-                if confianca > 0.40:
-                    gerenciador.registrar_analise(par_atual, preco_atual, round(adx_atual,1), sinal, round(confianca*100, 1))
-
-                # --- 3. EXECUÇÃO (ENTRADA) ---
+                # --- 3. ENTRADA ---
                 if not em_posicao and sinal in ["BUY", "SELL"]:
-                    if gerenciador.pode_enviar_alerta(par_atual, TIMEFRAME):
-                        print(f"\n🚀 SINAL V6 CONFIRMADO EM {par_atual}!")
+                    if self.gerenciador.pode_enviar_alerta(par_atual, "15m"):
                         
-                        # 3.1 Busca Preço Maker
-                        preco_book = con.buscar_melhor_preco_book(par_atual, sinal)
-                        if preco_book == 0: preco_book = preco_atual
+                        # Filtro RSI (Extra)
+                        ok_rsi, msg_rsi = self.filtro_rsi(df, sinal)
+                        if not ok_rsi:
+                            print(f"⚠️ Sinal Ignorado: {msg_rsi}")
+                            continue
+
+                        # Se passou tudo, ATACA!
+                        print(f"\n🚀 SINAL V7 CONFIRMADO!")
                         
-                        # 3.2 Calcula Quantidade (Gestão de Banca)
-                        qtd = con.calcular_qtd_correta(par_atual, VALOR_APOSTA_USDT, preco_book)
+                        # Lógica de Quantidade
+                        preco_book = self.con.buscar_melhor_preco_book(par_atual, sinal) or preco
+                        qtd = self.con.calcular_qtd_correta(par_atual, self.VALOR_APOSTA, preco_book)
                         
                         if qtd > 0:
-                            # 3.3 Calcula Risco ATR
-                            distancia_stop = (atr_pct / 100) * preco_book * ATR_STOP_MULT
-                            distancia_alvo = (atr_pct / 100) * preco_book * ATR_TAKE_MULT
-                            
-                            if sinal == "BUY":
-                                stop_loss = preco_book - distancia_stop
-                                take_profit = preco_book + distancia_alvo
-                                lado_saida = "SELL"
-                            else: # SHORT
-                                stop_loss = preco_book + distancia_stop
-                                take_profit = preco_book - distancia_alvo
-                                lado_saida = "BUY"
-
-                            # Arredonda preços
-                            _, tick = con.obter_precisao_moeda(par_atual)
-                            if tick:
-                                stop_loss = round(stop_loss / tick) * tick
-                                take_profit = round(take_profit / tick) * tick
-
-                            print(f"💰 Entrada: {preco_book} | 🛑 Stop: {stop_loss} | 🎯 Alvo: {take_profit}")
-                            
-                            # --- EXECUÇÃO SIMULADA (Segurança Primeiro) ---
+                            print(f"💰 Entrada: {preco_book} | Alavancagem: {self.ALAVANCAGEM}x")
                             print("✅ Ordem Simulada Preenchida!")
+                            
                             em_posicao = True
-                            par_em_operacao = par_atual
                             lado_trade = sinal
                             preco_entrada = preco_book
-                            preco_stop_inicial = stop_loss
-                            preco_alvo_inicial = take_profit
+                            max_preco = preco_book
                             
-                            # Registra no Dashboard
-                            gerenciador.registrar_envio(par_atual)
-                            gerenciador.registrar_trade(
-                                par_atual, sinal, preco_book, qtd, VALOR_APOSTA_USDT, f"V6-ATR ({ATR_STOP_MULT}x)"
-                            )
-                            break # Sai do loop para focar no trade
+                            self.gerenciador.registrar_envio(par_atual)
+                            self.gerenciador.registrar_trade(par_atual, sinal, preco_book, qtd, self.VALOR_APOSTA, "V7-AGRESSIVO")
 
-            # Atualiza Dashboard ao vivo
-            if relatorio_ciclo:
-                gerenciador.atualizar_monitor(relatorio_ciclo)
+                # --- 4. GESTÃO (TRAILING AGRESSIVO) ---
+                if em_posicao:
+                    # Calcula Lucro Atual
+                    if lado_trade == "BUY":
+                        lucro_pct = (preco - preco_entrada) / preco_entrada
+                        if preco > max_preco: max_preco = preco
+                        queda = (max_preco - preco) / max_preco
+                    else:
+                        lucro_pct = (preco_entrada - preco) / preco_entrada
+                        if preco < max_preco: max_preco = preco # Menor é melhor no short
+                        queda = (preco - max_preco) / max_preco
 
-            # --- 4. GESTÃO (SAÍDA) ---
-            if em_posicao:
-                print(f"   🛡️ {par_em_operacao}: Posição Aberta | Stop: {preco_stop_inicial} | Alvo: {preco_alvo_inicial}")
-                
-                # Verifica Saída (Simulação)
-                # Na real, a Binance faria isso sozinha com a ordem OCO
-                saiu = False
-                resultado = ""
-                
-                if lado_trade == "BUY":
-                    if preco_atual <= preco_stop_inicial: saiu=True; resultado="STOP LOSS"
-                    elif preco_atual >= preco_alvo_inicial: saiu=True; resultado="TAKE PROFIT"
-                else: # SELL
-                    if preco_atual >= preco_stop_inicial: saiu=True; resultado="STOP LOSS"
-                    elif preco_atual <= preco_alvo_inicial: saiu=True; resultado="TAKE PROFIT"
-                
-                if saiu:
-                    print(f"👋 SAÍDA: {resultado}")
-                    em_posicao = False
-                    par_em_operacao = None
-                    time.sleep(2)
+                    print(f"   🛡️ Posição: {lucro_pct*100:.2f}% | Max: {max_preco}")
 
-            time.sleep(5)
+                    # Regras de Saída V7
+                    sair = False
+                    motivo = ""
 
-        except KeyboardInterrupt:
-            print("\n🛑 Bot parado.")
-            break
-        except Exception as e:
-            print(f"❌ Erro Loop: {e}")
-            time.sleep(5)
+                    # 1. Stop Loss de Emergência (Fixo ATR 2x ou -0.6%)
+                    if lucro_pct < -0.006: 
+                        sair = True; motivo = "STOP LOSS"
+                    
+                    # 2. Trailing Stop (Garantir Lucro)
+                    elif lucro_pct > self.GATILHO_TRAILING: # Já lucrou 0.5%?
+                        print(f"      🎯 Trailing Ativado! (Devolver {self.CALLBACK_TRAILING*100}%)")
+                        if queda > self.CALLBACK_TRAILING:
+                            sair = True; motivo = f"TRAILING PROFIT (+{lucro_pct*100:.2f}%)"
+
+                    if sair:
+                        print(f"👋 SAÍDA: {motivo}")
+                        lucro_usdt = self.VALOR_APOSTA * lucro_pct
+                        self.lucro_acumulado += lucro_usdt
+                        self.trades_hoje += 1
+                        
+                        em_posicao = False
+                        par_atual = None # Força rescan
+                        print(f"💰 Resultado Trade: ${lucro_usdt:.2f}")
+                        time.sleep(2)
+
+                time.sleep(5) # Ciclo rápido
+
+            except KeyboardInterrupt:
+                print("\n🛑 Bot parado.")
+                break
+            except Exception as e:
+                print(f"❌ Erro: {e}")
+                time.sleep(5)
 
 if __name__ == "__main__":
-    main()
+    bot = DailyGoalBot()
+    bot.run()
