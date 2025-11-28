@@ -1,137 +1,145 @@
-# Binance/gerar_dataset_v11_fusion.py (CORRIGIDO: INCLUI PREÇO)
+# Binance/gerar_dataset_v11_fusion.py (REFATORADO)
 import pandas as pd
 import numpy as np
 from binance_connector import BinanceConnector
-import pandas_ta as ta
 import time
-import sys, os
+import sys
+import os
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Genesis_AI'))
 from features_engine import FeaturesEngine
 
 # --- CONFIGURAÇÃO V11 ---
 QTD_MOEDAS = 50
 TIMEFRAME = "15m"
-QTD_POR_MOEDA = 6000   # 6000 candles = ~2 meses
-HORIZONTE_ALVO = 8     
-ALVO_LUCRO = 0.008     
+QTD_POR_MOEDA = 6000
+HORIZONTE_ALVO = 8
+ALVO_LUCRO = 0.008
+
 
 def obter_top_50_moedas(connector):
+    """Obtém as top 50 moedas por volume"""
     try:
         tickers = connector.client.futures_ticker()
         df = pd.DataFrame(tickers)
         df = df[df['symbol'].str.endswith('USDT')]
         df['quoteVolume'] = pd.to_numeric(df['quoteVolume'])
         return df.sort_values('quoteVolume', ascending=False).head(QTD_MOEDAS)['symbol'].tolist()
-    except: return []
+    except Exception as e:
+        print(f"❌ Erro ao obter top moedas: {e}")
+        return []
+
 
 def buscar_historico(connector, par):
+    """Busca histórico de candles com paginação"""
     try:
         klines = []
         end_time = None
-        for _ in range(5): 
-            k = connector.client.futures_klines(symbol=par, interval=TIMEFRAME, limit=1500, endTime=end_time)
-            if not k: break
+        
+        for _ in range(5):
+            k = connector.client.futures_klines(
+                symbol=par,
+                interval=TIMEFRAME,
+                limit=1500,
+                endTime=end_time
+            )
+            if not k:
+                break
             klines.extend(k)
             end_time = int(k[0][0]) - 1
             time.sleep(0.1)
+            
         klines.sort(key=lambda x: x[0])
         return connector._tratar_df(klines)
-    except: return None
+    except Exception as e:
+        print(f"❌ Erro ao buscar histórico {par}: {e}")
+        return None
 
-def processar_fusao(df_moeda, df_btc):
-    # 1. Merge Inicial
-    df_moeda = df_moeda.set_index('timestamp')
-    df_btc = df_btc.set_index('timestamp')[['close', 'volume']]
-    df_btc.columns = ['btc_close', 'btc_volume']
-    
-    df = df_moeda.join(df_btc, how='inner').reset_index()
-    
-    for c in ['close', 'high', 'low', 'volume', 'btc_close', 'btc_volume']:
-        df[c] = df[c].astype(float)
 
-    # 2. Features Matemáticas
-    for p in [3, 5, 10, 20]:
-        df[f'mom_{p}'] = df['close'].pct_change(p)
-
-    vol_curta = df['close'].pct_change().rolling(5).std()
-    vol_longa = df['close'].pct_change().rolling(20).std()
-    df['vol_ratio'] = vol_curta / vol_longa
-
-    max_20 = df['high'].rolling(20).max()
-    min_20 = df['low'].rolling(20).min()
-    df['pos_canal'] = (df['close'] - min_20) / (max_20 - min_20)
-
-    ema9 = df.ta.ema(close=df['close'], length=9)
-    ema21 = df.ta.ema(close=df['close'], length=21)
-    df['trend_str'] = (ema9 - ema21) / ema21
-
-    vol_med = df['volume'].rolling(20).mean()
-    df['vol_surge'] = df['volume'] / vol_med
-
-    df['btc_mom'] = df['btc_close'].pct_change(5)
-    df['rel_str'] = df['mom_5'] - df['btc_mom']
-
-    # 3. Limpeza
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df.dropna(inplace=True)
-    df.reset_index(drop=True, inplace=True)
-
-    # 4. Target (Para análise futura, a IA RL não usa isso diretamente)
-    future_return = df['close'].shift(-HORIZONTE_ALVO) / df['close'] - 1
+def calcular_target(df, horizonte=HORIZONTE_ALVO, alvo_lucro=ALVO_LUCRO):
+    """Calcula o target para treinamento supervisionado"""
+    future_return = df['close'].shift(-horizonte) / df['close'] - 1
     vol_check = df['close'].pct_change().rolling(20).std()
-    valid_trade = vol_check < 0.02 
+    valid_trade = vol_check < 0.02
     
     conditions = [
-        (future_return > ALVO_LUCRO) & valid_trade,
-        (future_return < -ALVO_LUCRO) & valid_trade
+        (future_return > alvo_lucro) & valid_trade,
+        (future_return < -alvo_lucro) & valid_trade
     ]
     choices = [1, 2]
-    df['target'] = np.select(conditions, choices, default=0)
+    
+    return np.select(conditions, choices, default=0)
 
+
+def processar_fusao(df_moeda, df_btc):
+    """Processa e fusiona dados da moeda com BTC usando FeaturesEngine"""
+    # Usa o motor central de features
+    df = FeaturesEngine.processar_dados(df_moeda, df_btc)
+    
+    # Adiciona target apenas para treinamento
+    df['target'] = calcular_target(df)
+    
+    # Remove últimas linhas para evitar data leakage
     return df.iloc[:-HORIZONTE_ALVO]
 
+
 def main():
+    """Função principal"""
     con = BinanceConnector()
+    
     print("👑 Baixando BTC Mestre...")
     df_btc = buscar_historico(con, "BTCUSDT")
-    if df_btc is None: return
+    if df_btc is None:
+        print("❌ Falha ao carregar dados do BTC")
+        return
 
     moedas = obter_top_50_moedas(con)
+    if not moedas:
+        print("❌ Nenhuma moeda encontrada")
+        return
+
     dfs = []
+    print(f"🚜 Minerando V11 Fusion ({len(moedas)} moedas)...")
     
-    print(f"🚜 Minerando V11 Fusion (Com 'close' incluso)...")
     for i, par in enumerate(moedas):
-        if par == "BTCUSDT": continue
-        print(f"[{i+1}/{len(moedas)}] {par}...", end="\r")
+        if par == "BTCUSDT":
+            continue
+            
+        print(f"[{i+1}/{len(moedas)}] Processando {par}...", end="\r")
         
         df_raw = buscar_historico(con, par)
         if df_raw is not None and len(df_raw) > 1000:
             try:
                 df_proc = processar_fusao(df_raw, df_btc)
                 
-                # --- CORREÇÃO: ADICIONADO 'close' À LISTA ---
-                cols = [
-                    'close',  # <--- ESSENCIAL PARA O GÊNESIS
-                    'mom_3', 'mom_5', 'mom_10', 'vol_ratio', 'pos_canal', 
-                    'trend_str', 'vol_surge', 'btc_mom', 'rel_str',
-                    'target', 'timestamp'
-                ]
-                
-                if all(c in df_proc.columns for c in cols):
-                    dfs.append(df_proc[cols])
-            except: pass
-            
+                # Mantém todas as features geradas pelo FeaturesEngine
+                # Inclui automaticamente 'close' e outras features
+                if len(df_proc) > 0:
+                    dfs.append(df_proc)
+                    
+            except Exception as e:
+                print(f"❌ Erro ao processar {par}: {e}")
+                continue
+
     if dfs:
-        print("\n🌪️ Unificando V11...")
+        print("\n🌪️ Unificando dataset...")
         df_final = pd.concat(dfs, ignore_index=True)
         df_final = df_final.sort_values('timestamp').reset_index(drop=True)
-        df_final.drop(columns=['timestamp'], inplace=True)
         
-        df_final.to_csv("dataset_v11_fusion.csv", index=False)
-        print(f"\n💾 DATASET CORRIGIDO! {len(df_final)} linhas.")
-        print("👉 Agora o 'train_genesis.py' vai funcionar!")
+        # Remove colunas temporárias se existirem
+        cols_to_drop = ['timestamp']
+        df_final = df_final.drop(columns=[col for col in cols_to_drop if col in df_final.columns])
+        
+        # Salva dataset
+        filename = "dataset_v11_fusion.csv"
+        df_final.to_csv(filename, index=False)
+        
+        print(f"\n💾 DATASET SALVO! {len(df_final)} linhas, {len(df_final.columns)} features")
+        print("📊 Features incluídas:", list(df_final.columns))
+        print(f"📁 Arquivo: {filename}")
     else:
-        print("\n❌ Erro na geração.")
+        print("\n❌ Nenhum dado válido foi processado")
+
 
 if __name__ == "__main__":
     main()

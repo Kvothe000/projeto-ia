@@ -2,168 +2,143 @@
 import pandas as pd
 import numpy as np
 import gymnasium as gym
+from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 import matplotlib.pyplot as plt
-import seaborn as sns
-from datetime import datetime
+import os
 
+# --- DEFINIÇÃO DO AMBIENTE (Cópia exata do Treino para compatibilidade) ---
+class FixedCryptoTradingEnv(gym.Env):
+    def __init__(self, df, lookback_window=30, initial_balance=10000):
+        super(FixedCryptoTradingEnv, self).__init__()
+        self.df = df
+        self.lookback_window = lookback_window
+        self.initial_balance = initial_balance
+        self.action_space = spaces.Discrete(4)
+        self.observation_space = spaces.Box(
+            low=-10, high=10, 
+            shape=(lookback_window, self.df.shape[1]), 
+            dtype=np.float32
+        )
+        self.reset()
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.balance = self.initial_balance
+        self.net_worth = self.initial_balance
+        self.current_step = self.lookback_window
+        self.position = 0
+        self.entry_price = 0.0
+        return self._get_observation(), {}
+
+    def _get_observation(self):
+        obs = self.df.iloc[self.current_step - self.lookback_window : self.current_step].values
+        return obs.astype(np.float32)
+
+    def step(self, action):
+        self.current_step += 1
+        if self.current_step >= len(self.df) - 1:
+            return self._get_observation(), 0, True, False, {'net_worth': self.net_worth}
+        
+        # Preços simulados (Normalized Close como proxy de variação)
+        curr_val = self.df.iloc[self.current_step, 0]
+        prev_val = self.df.iloc[self.current_step-1, 0]
+        pct_change = (curr_val - prev_val) * 0.01 # Escala reduzida
+        
+        reward = 0
+        if action == 3 and self.position != 0: self.position = 0
+        elif action == 1: self.position = 1
+        elif action == 2: self.position = -1
+            
+        if self.position == 1: reward += pct_change * 10
+        elif self.position == -1: reward -= pct_change * 10
+        
+        # Atualiza Net Worth (Simulado)
+        self.net_worth *= (1 + (pct_change if self.position == 1 else -pct_change if self.position == -1 else 0))
+        
+        return self._get_observation(), reward, False, False, {'net_worth': self.net_worth}
+
+# --- CLASSE DE TESTE ---
 class PerformanceTester:
     def __init__(self, model_path, test_data_path):
+        if not os.path.exists(model_path + ".zip"):
+            raise FileNotFoundError(f"Modelo não encontrado: {model_path}")
+            
         self.model = PPO.load(model_path)
-        self.test_data = pd.read_csv(test_data_path)
-        self.results = {
-            'total_trades': 0,
-            'winning_trades': 0,
-            'losing_trades': 0,
-            'total_return': 0,
-            'max_drawdown': 0,
-            'sharpe_ratio': 0,
-            'equity_curve': []
-        }
+        self.raw_df = pd.read_csv(test_data_path)
+        
+        # PREPARAÇÃO DOS DADOS (CRUCIAL: Igual ao Treino)
+        self.test_data = self.raw_df.select_dtypes(include=[np.number])
+        # Normalização Z-Score
+        self.test_data = (self.test_data - self.test_data.mean()) / self.test_data.std()
+        self.test_data = self.test_data.fillna(0).clip(-5, 5)
+        
+        self.results = {}
     
     def run_backtest(self, initial_balance=10000):
-        """Executa backtest completo da IA"""
         print("🧪 INICIANDO BACKTEST DA IA GENESIS...")
         
-        # Prepara dados de teste (últimos 20% dos dados)
+        # Usa os últimos 20% para teste (Futuro)
         test_size = int(0.2 * len(self.test_data))
-        test_df = self.test_data.tail(test_size).copy()
+        test_df = self.test_data.tail(test_size).reset_index(drop=True)
         
-        # Cria ambiente de teste
-        env = DummyVecEnv([lambda: self._create_test_env(test_df, initial_balance)])
+        # Cria ambiente
+        env = DummyVecEnv([lambda: FixedCryptoTradingEnv(test_df, initial_balance=initial_balance)])
         
-        # Executa teste
         obs = env.reset()
         done = False
-        episode_rewards = []
-        current_balance = initial_balance
-        equity_curve = [current_balance]
-        trades = []
         
+        equity_curve = [initial_balance]
+        trades = []
         step = 0
-        while not done and step < len(test_df) - 50:
-            action, _states = self.model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step([action])
+        
+        while not done:
+            action, _ = self.model.predict(obs, deterministic=True)
+            obs, reward, done, info = env.step(action)
             
-            episode_rewards.append(reward[0])
-            current_balance = info[0].get('net_worth', current_balance)
-            equity_curve.append(current_balance)
+            # Captura info do ambiente
+            net_worth = info[0]['net_worth']
+            equity_curve.append(net_worth)
             
-            # Registra trades
-            if action in [1, 2]:  # Entradas LONG ou SHORT
+            # Registra Ação (Ignora Hold=0)
+            act = action[0]
+            if act != 0:
                 trades.append({
                     'step': step,
-                    'action': action,
+                    'action': ["HOLD", "BUY", "SELL", "CLOSE"][act],
                     'reward': reward[0],
-                    'balance': current_balance
+                    'equity': net_worth
                 })
-            
             step += 1
-        
-        # Analisa resultados
-        self._analyze_performance(equity_curve, trades, episode_rewards, initial_balance)
+            
+        self._analyze_results(equity_curve, trades, initial_balance)
         return self.results
     
-    def _create_test_env(self, df, initial_balance):
-        """Cria ambiente de teste especializado"""
-        env = gym.make('CartPole-v1')  # Placeholder - substitua pelo seu ambiente
-        # Nota: Você precisará adaptar esta parte para seu ambiente específico
-        return env
-    
-    def _analyze_performance(self, equity_curve, trades, rewards, initial_balance):
-        """Analisa métricas de performance detalhadas"""
+    def _analyze_results(self, equity, trades, initial):
+        total_ret = (equity[-1] - initial) / initial * 100
+        wins = len([t for t in trades if t['reward'] > 0])
+        total_ops = len(trades)
+        win_rate = (wins / total_ops * 100) if total_ops > 0 else 0
         
-        # Calcula métricas básicas
-        total_return = (equity_curve[-1] - initial_balance) / initial_balance * 100
-        volatility = np.std(rewards) if rewards else 0
-        
-        # Calcula drawdown máximo
-        peak = initial_balance
-        max_drawdown = 0
-        for value in equity_curve:
-            if value > peak:
-                peak = value
-            drawdown = (peak - value) / peak * 100
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
-        
-        # Calcula Sharpe Ratio (simplificado)
-        sharpe_ratio = (np.mean(rewards) / volatility * np.sqrt(252)) if volatility > 0 else 0
-        
-        # Conta trades vencedores
-        winning_trades = len([t for t in trades if t['reward'] > 0])
-        losing_trades = len([t for t in trades if t['reward'] < 0])
-        
-        # Preenche resultados
-        self.results.update({
-            'total_trades': len(trades),
-            'winning_trades': winning_trades,
-            'losing_trades': losing_trades,
-            'win_rate': winning_trades / len(trades) * 100 if trades else 0,
-            'total_return': total_return,
-            'max_drawdown': max_drawdown,
-            'sharpe_ratio': sharpe_ratio,
-            'equity_curve': equity_curve,
-            'avg_trade_return': np.mean([t['reward'] for t in trades]) if trades else 0
-        })
-    
+        self.results = {
+            'win_rate': win_rate,
+            'total_return': total_ret,
+            'total_trades': total_ops,
+            'equity_curve': equity
+        }
+
     def generate_report(self):
-        """Gera relatório completo de performance"""
-        print("\n" + "="*60)
-        print("📊 RELATÓRIO DE PERFORMANCE - IA GENESIS")
-        print("="*60)
+        print("\n📊 RELATÓRIO DE PERFORMANCE")
+        print("="*30)
+        print(f"📈 Retorno Total: {self.results['total_return']:.2f}%")
+        print(f"🎯 Win Rate: {self.results['win_rate']:.1f}% ({self.results['total_trades']} trades)")
         
-        print(f"🎯 Total de Trades: {self.results['total_trades']}")
-        print(f"✅ Trades Vencedores: {self.results['winning_trades']}")
-        print(f"❌ Trades Perdedores: {self.results['losing_trades']}")
-        print(f"📈 Win Rate: {self.results['win_rate']:.2f}%")
-        print(f"💰 Retorno Total: {self.results['total_return']:.2f}%")
-        print(f"📉 Drawdown Máximo: {self.results['max_drawdown']:.2f}%")
-        print(f"⚡ Sharpe Ratio: {self.results['sharpe_ratio']:.2f}")
-        print(f"📊 Retorno Médio por Trade: {self.results['avg_trade_return']:.4f}")
-        
-        # Análise qualitativa
-        win_rate = self.results['win_rate']
-        total_return = self.results['total_return']
-        
-        if win_rate > 60 and total_return > 10:
-            rating = "🌟 EXCELENTE"
-        elif win_rate > 55 and total_return > 5:
-            rating = "✅ BOM" 
-        elif win_rate > 50 and total_return > 0:
-            rating = "⚠️ REGULAR"
-        else:
-            rating = "❌ PRECISA DE AJUSTES"
-            
-        print(f"\n🎖️  CLASSIFICAÇÃO: {rating}")
-        
-        # Plot equity curve
-        self._plot_equity_curve()
-    
-    def _plot_equity_curve(self):
-        """Plota curva de equity"""
-        plt.figure(figsize=(12, 6))
-        plt.plot(self.results['equity_curve'])
-        plt.title('Curva de Equity - IA Genesis')
-        plt.xlabel('Steps')
-        plt.ylabel('Patrimônio ($)')
-        plt.grid(True)
-        plt.savefig('Genesis_AI/equity_curve.png')
-        plt.close()
-        
-        print("\n📈 Gráfico salvo em: Genesis_AI/equity_curve.png")
-
-def main():
-    tester = PerformanceTester(
-        model_path="cerebros/genesis_v2_stable.zip",
-        test_data_path="dataset_v11_fusion.csv"
-    )
-    
-    results = tester.run_backtest()
-    tester.generate_report()
-    
-    return results
-
-if __name__ == "__main__":
-    main()
+        try:
+            plt.figure(figsize=(10,6))
+            plt.plot(self.results['equity_curve'])
+            plt.title("Curva de Patrimônio (Simulada)")
+            plt.savefig("Genesis_AI/performance_chart.png")
+            print("📉 Gráfico salvo em: Genesis_AI/performance_chart.png")
+        except:
+            print("⚠️ Matplotlib não instalado ou erro ao plotar.")

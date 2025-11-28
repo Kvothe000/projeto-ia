@@ -121,7 +121,7 @@ def main():
     print("🎓 Iniciando Treino Estável...")
     model.learn(total_timesteps=200000)
     
-    model.save("cerebros/genesis_v2_stable")
+    model.save("cerebros/genesis_v1")
     print("✅ Treino Concluído!")
 
 if __name__ == "__main__":
