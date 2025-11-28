@@ -1,4 +1,4 @@
-# Genesis_AI/fixed_trading_env.py (V12 - O AMBIENTE ESTÁVEL)
+# Genesis_AI/fixed_trading_env.py (VERSÃO FLEXÍVEL)
 import gymnasium as gym
 import numpy as np
 import pandas as pd
@@ -8,11 +8,22 @@ class RealisticTradingEnv(gym.Env):
     def __init__(self, df_norm, df_price, initial_balance=10000, lookback_window=50):
         super(RealisticTradingEnv, self).__init__()
         
-        # Dados para OBSERVAÇÃO (Normalizados)
+        # Dados Normalizados (O que a IA vê)
         self.df = df_norm
-        # Preço REAL (para cálculo de lucro)
-        self.price_data = df_price['close'].values
         
+        # Preço REAL (Para calcular lucro) - CORREÇÃO DE FLEXIBILIDADE
+        if isinstance(df_price, pd.DataFrame) and 'close' in df_price.columns:
+            self.price_data = df_price['close'].values
+        elif hasattr(df_price, 'values'):
+             # Se for Series ou DataFrame sem coluna 'close' explícita
+            self.price_data = df_price.values
+        else:
+            self.price_data = np.array(df_price)
+            
+        # Garante array 1D (Lista simples)
+        if len(self.price_data.shape) > 1:
+            self.price_data = self.price_data.flatten()
+
         self.initial_balance = initial_balance
         self.lookback_window = lookback_window
         
@@ -30,7 +41,6 @@ class RealisticTradingEnv(gym.Env):
         self.reset()
     
     def _safe_normalize(self, df):
-        # ... (Copiado do seu código - Garantia de normalização) ...
         df_normalized = df.copy()
         df_normalized = df_normalized.select_dtypes(include=[np.number])
         
@@ -43,12 +53,12 @@ class RealisticTradingEnv(gym.Env):
         
         return df_normalized.fillna(0)
     
-    def reset(self, seed=None):
-        # ... (Reset igual) ...
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
         self.balance = self.initial_balance
         self.net_worth = self.initial_balance
         self.current_step = self.lookback_window
-        self.position = 0
+        self.position = 0 
         self.entry_price = 0.0
         
         return self._get_observation(), {}
@@ -57,7 +67,6 @@ class RealisticTradingEnv(gym.Env):
         start = self.current_step - self.lookback_window
         obs = self.df.iloc[start:self.current_step].values
         
-        # Garante que obs é o tamanho certo (padding)
         if len(obs) < self.lookback_window:
              padding = np.zeros((self.lookback_window - len(obs), self.df.shape[1]))
              obs = np.vstack([padding, obs])
@@ -70,36 +79,34 @@ class RealisticTradingEnv(gym.Env):
         if self.current_step >= len(self.df) - 1:
             return self._get_observation(), 0, True, False, {'net_worth': self.net_worth}
         
-        # --- PREÇOS REAIS PARA CÁLCULO ---
+        # Preços Reais
         current_price = self.price_data[self.current_step]
-        prev_price = self.price_data[self.current_step - 1]
-        
-        reward = 0
-        terminated = False
         
         # Lógica de Posição
-        if action == 3 and self.position != 0: # Close
+        reward = 0
+        
+        # 3: Close
+        if action == 3 and self.position != 0: 
             pnl = 0
             if self.position == 1: pnl = (current_price - self.entry_price) / self.entry_price
             elif self.position == -1: pnl = (self.entry_price - current_price) / self.entry_price
             
-            # Aplica PnL e Custos
             self.net_worth += (self.net_worth * pnl) - (self.net_worth * self.taxa)
             self.position = 0
-            reward += pnl * 100 # Recompensa proporcional ao resultado final
             
-        elif action == 1: # Long
+        # 1: Long
+        elif action == 1: 
             if self.position == 0: 
                 self.position = 1
                 self.entry_price = current_price
-                self.net_worth -= self.net_worth * self.taxa # Custo de entrada
-            elif self.position == -1: # Troca
+                self.net_worth -= self.net_worth * self.taxa
+            elif self.position == -1: 
                 self.position = 1
                 self.entry_price = current_price
                 self.net_worth -= self.net_worth * (self.taxa * 2)
-                reward -= 0.1 # Punição por indecisão
 
-        elif action == 2: # Short
+        # 2: Short
+        elif action == 2: 
             if self.position == 0:
                 self.position = -1
                 self.entry_price = current_price
@@ -108,16 +115,20 @@ class RealisticTradingEnv(gym.Env):
                 self.position = -1
                 self.entry_price = current_price
                 self.net_worth -= self.net_worth * (self.taxa * 2)
-                reward -= 0.1
 
-        # Recompensa/Punição de Variação (Unrealized PnL)
-        if self.position != 0:
-            pct_change = (current_price - prev_price) / prev_price
-            reward += pct_change * (10 if self.position == 1 else -10)
+        # Recompensa Contínua (Variação Patrimonial)
+        # Usamos a variação percentual do preço real para ajustar o net_worth simulado
+        prev_price = self.price_data[self.current_step - 1]
+        pct_change = (current_price - prev_price) / prev_price
         
-        # Condições de Fim de Episódio
-        if self.net_worth <= self.initial_balance * 0.1: # Perdeu 90%
+        if self.position == 1: 
+            self.net_worth *= (1 + pct_change)
+        elif self.position == -1: 
+            self.net_worth *= (1 - pct_change)
+            
+        # Falência
+        terminated = False
+        if self.net_worth <= self.initial_balance * 0.1:
             terminated = True
-            reward = -100 # Punição extrema por falência
-
+            
         return self._get_observation(), reward, terminated, False, {'net_worth': self.net_worth}
