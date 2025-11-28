@@ -3,7 +3,7 @@ import time
 import pandas as pd
 import pandas_ta as ta
 from binance_connector import BinanceConnector
-from ai_trader_v5 import TraderIAV5
+from ai_trader_v7 import TraderIAV5
 from manager import GerenciadorEstado
 from scanner import ScannerCrypto
 
