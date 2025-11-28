@@ -1,4 +1,4 @@
-# Binance/ai_trader_v6.py (CÉREBRO COM CONTEXTO + ATR)
+# Binance/ai_trader_v6.py (VERSÃO ESTÁVEL)
 import joblib
 import pandas as pd
 import numpy as np
@@ -9,64 +9,83 @@ from binance_connector import BinanceConnector
 class TraderIAV6:
     def __init__(self):
         self.modelo = None
-        self.limiar = 0.55 # Confiança mínima (validada no treino)
+        self.limiar = 0.55
         self.connector = BinanceConnector()
         self.carregar_modelo()
 
     def carregar_modelo(self):
         if os.path.exists("modelo_ia_v6.pkl"):
             self.modelo = joblib.load("modelo_ia_v6.pkl")
-            print("🧠 Cérebro V6 (Context Aware) Carregado!")
+            print("🧠 Cérebro V6 Carregado!")
         else:
             print("❌ ERRO: modelo_ia_v6.pkl não encontrado.")
 
-    def preparar_dados(self, df_moeda):
-        # 1. Baixar BTC para contexto (Últimos 100 candles para garantir médias)
-        # O df_moeda tem 500 candles, baixamos 500 do BTC
-        df_btc = self.connector.buscar_candles("BTCUSDT", "15m", limit=len(df_moeda))
-        if df_btc is None: return None
+    def preparar_dados(self, df_moeda, df_btc=None): # <--- Aceita BTC externo
+        try:
+            # 1. Se não recebeu BTC, tenta baixar (Fallback)
+            if df_btc is None:
+                df_btc = self.connector.buscar_candles("BTCUSDT", "15m", limit=len(df_moeda))
+            
+            if df_btc is None or len(df_btc) < 10:
+                # Se falhar, usa a moeda sozinha (Modo Emergência) para não zerar ATR
+                df = df_moeda.copy()
+                df['btc_close'] = df['close'] 
+            else:
+                # Sincroniza dados (Merge Seguro)
+                df_moeda = df_moeda.set_index('timestamp')
+                df_btc_index = df_btc[['timestamp', 'close']].set_index('timestamp')
+                df_btc_index.columns = ['btc_close']
+                df = df_moeda.join(df_btc_index, how='inner').reset_index()
 
-        # 2. Sincronizar (Merge)
-        df_moeda = df_moeda.set_index('timestamp')
-        df_btc = df_btc.set_index('timestamp')[['close']]
-        df_btc.columns = ['btc_close']
-        
-        # Junta os dados (Inner Join)
-        df = df_moeda.join(df_btc, how='inner').reset_index()
+            # 2. Calcular Indicadores (Com Calculadora Blindada)
+            df = Calculadora.adicionar_todos(df)
+            
+            # 3. Features
+            df['pv'] = df['close'] * df['volume']
+            df['VWAP'] = df['pv'].cumsum() / df['volume'].cumsum()
+            df['Dist_VWAP'] = (df['close'] - df['VWAP']) / df['VWAP'] * 100
+            
+            vol_media = df['volume'].rolling(20).mean()
+            df['CVD_Slope'] = df['CVD'].diff(3) / vol_media
+            df['Vol_Relativo'] = df['volume'] / vol_media
+            
+            # ATR (Se não existir, cria fallback)
+            if 'ATRr_14' in df.columns:
+                df['ATRr'] = df['ATRr_14']
+            else:
+                # Calcula ATRr na mão se a lib falhar
+                df['ATRr'] = (df['high'] - df['low']) / df['close'] * 100
 
-        # 3. Calcular Indicadores (IGUAL AO TREINO)
-        df = Calculadora.adicionar_todos(df)
-        
-        # VWAP
-        df['pv'] = df['close'] * df['volume']
-        df['VWAP'] = df['pv'].cumsum() / df['volume'].cumsum()
-        df['Dist_VWAP'] = (df['close'] - df['VWAP']) / df['VWAP'] * 100
-        
-        # CVD Normalizado
-        vol_media = df['volume'].rolling(20).mean()
-        df['CVD_Slope'] = df['CVD'].diff(3) / vol_media
-        df['Vol_Relativo'] = df['volume'] / vol_media
-        df['ATRr'] = df['ATRr_14']
-        
-        # Contexto BTC
-        df['BTC_Change'] = df['btc_close'].pct_change(3)
-        df['Rel_Strength'] = df['close'].pct_change(3) - df['BTC_Change']
-        
-        df.replace([np.inf, -np.inf], 0, inplace=True)
-        return df.iloc[[-1]].fillna(0) # Retorna só a última linha
+            # Contexto
+            if 'btc_close' in df.columns:
+                df['BTC_Change'] = df['btc_close'].pct_change(3)
+                df['Rel_Strength'] = df['close'].pct_change(3) - df['BTC_Change']
+            
+            df.replace([np.inf, -np.inf], 0, inplace=True)
+            df.fillna(0, inplace=True)
+            
+            return df.iloc[[-1]]
 
-    def analisar_mercado(self, df_candles):
+        except Exception as e:
+            print(f"⚠️ Erro Preparação: {e}")
+            return None
+
+    def analisar_mercado(self, df_candles, df_btc=None): # <--- Aceita BTC aqui também
         if self.modelo is None: return "NEUTRO", 0.0, 0.0
 
         try:
-            X_hoje = self.preparar_dados(df_candles.copy())
+            X_hoje = self.preparar_dados(df_candles.copy(), df_btc)
             if X_hoje is None: return "NEUTRO", 0.0, 0.0
             
-            # Colunas exatas do treino V6
-            cols = ['RSI_14', 'ADX_14', 'Dist_VWAP', 'CVD_Slope', 'Vol_Relativo', 'ATRr', 'BTC_Change', 'Rel_Strength']
+            cols_ia = [
+                'RSI_14', 'ADX_14', 'Dist_VWAP', 'CVD_Slope', 
+                'Vol_Relativo', 'ATRr', 'BTC_Change', 'Rel_Strength'
+            ]
             
-            # Previsão
-            probs = self.modelo.predict_proba(X_hoje[cols])[0]
+            for col in cols_ia:
+                if col not in X_hoje.columns: X_hoje[col] = 0.0
+
+            probs = self.modelo.predict_proba(X_hoje[cols_ia])[0]
             prob_long, prob_short = probs[1], probs[2]
             
             sinal = "NEUTRO"
@@ -75,11 +94,10 @@ class TraderIAV6:
             if prob_long > self.limiar: sinal = "BUY"
             elif prob_short > self.limiar: sinal = "SELL"
             
-            # Retorna também o ATR (em %) para calcular o Stop Loss
-            atr_atual_pct = float(X_hoje['ATRr'].values[0])
+            atr = float(X_hoje['ATRr'].values[0])
             
-            return sinal, confianca, atr_atual_pct
+            return sinal, confianca, atr
 
         except Exception as e:
-            # print(f"Erro IA: {e}")
+            print(f"❌ Erro IA: {e}")
             return "NEUTRO", 0.0, 0.0

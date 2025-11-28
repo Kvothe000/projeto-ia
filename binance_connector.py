@@ -1,4 +1,4 @@
-# Binance/binance_connector.py - VERSÃO V6 (SAFE STOP)
+# Binance/binance_connector.py - VERSÃO CORRIGIDA (INT TIMESTAMP)
 import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -18,12 +18,18 @@ class BinanceConnector:
         if not klines: return None
         cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'taker_buy_base', 'tbq', 'ig']
         df = pd.DataFrame(klines, columns=cols)
+        
+        # --- CORREÇÃO CRÍTICA: TIMESTAMP COMO INTEIRO ---
+        df['timestamp'] = df['timestamp'].astype('int64')
+        # ------------------------------------------------
+        
         numericos = ['open', 'high', 'low', 'close', 'volume', 'taker_buy_base']
         df[numericos] = df[numericos].apply(pd.to_numeric, errors='coerce')
         
-        # CVD Simplificado
+        # CVD
         df['delta_volume'] = df['taker_buy_base'] - (df['volume'] - df['taker_buy_base'])
         df['CVD'] = df['delta_volume'].cumsum()
+        
         return df[['timestamp', 'open', 'high', 'low', 'close', 'volume', 'CVD']]
 
     def buscar_candles(self, par, timeframe, mercado="FUTUROS", limit=1000):
@@ -73,16 +79,13 @@ class BinanceConnector:
             return None
 
     def colocar_stop_loss(self, par, lado_stop, qtd, preco_stop):
-        """Coloca um Stop Market de proteção na Binance"""
         try:
-            print(f"🛡️ Enviando STOP LOSS {lado_stop} a {preco_stop}...")
+            print(f"🛡️ STOP LOSS {lado_stop} a {preco_stop}...")
             return self.client.futures_create_order(
                 symbol=par, side=lado_stop, type='STOP_MARKET',
-                stopPrice=str(preco_stop), closePosition=True # Fecha a posição inteira
+                stopPrice=str(preco_stop), closePosition=True
             )
-        except Exception as e:
-            print(f"❌ Erro Stop Loss: {e}")
-            return None
+        except: return None
             
     def cancelar_todas_ordens(self, par):
         try:
