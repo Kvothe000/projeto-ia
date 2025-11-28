@@ -1,16 +1,19 @@
-# Binance/gerar_dataset_v11_fusion.py (CORRIGIDO)
+# Binance/gerar_dataset_v11_fusion.py (CORRIGIDO: INCLUI PREÇO)
 import pandas as pd
 import numpy as np
 from binance_connector import BinanceConnector
 import pandas_ta as ta
 import time
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Genesis_AI'))
+from features_engine import FeaturesEngine
 
 # --- CONFIGURAÇÃO V11 ---
 QTD_MOEDAS = 50
 TIMEFRAME = "15m"
-QTD_POR_MOEDA = 6000   # 6000 candles = ~2 meses (Rápido e Recente)
-HORIZONTE_ALVO = 8     # 2 horas
-ALVO_LUCRO = 0.008     # 0.8%
+QTD_POR_MOEDA = 6000   # 6000 candles = ~2 meses
+HORIZONTE_ALVO = 8     
+ALVO_LUCRO = 0.008     
 
 def obter_top_50_moedas(connector):
     try:
@@ -36,63 +39,47 @@ def buscar_historico(connector, par):
     except: return None
 
 def processar_fusao(df_moeda, df_btc):
-    # 1. Merge Inicial (Moeda + BTC)
+    # 1. Merge Inicial
     df_moeda = df_moeda.set_index('timestamp')
     df_btc = df_btc.set_index('timestamp')[['close', 'volume']]
     df_btc.columns = ['btc_close', 'btc_volume']
     
-    # Inner Join para alinhar tempos
     df = df_moeda.join(df_btc, how='inner').reset_index()
     
-    # Garante numérico
-    cols_num = ['close', 'high', 'low', 'volume', 'btc_close', 'btc_volume']
-    for c in cols_num: df[c] = df[c].astype(float)
+    for c in ['close', 'high', 'low', 'volume', 'btc_close', 'btc_volume']:
+        df[c] = df[c].astype(float)
 
-    # 2. Features Matemáticas (V11)
-    
-    # Momentum
+    # 2. Features Matemáticas
     for p in [3, 5, 10, 20]:
         df[f'mom_{p}'] = df['close'].pct_change(p)
 
-    # Volatilidade Relativa
     vol_curta = df['close'].pct_change().rolling(5).std()
     vol_longa = df['close'].pct_change().rolling(20).std()
     df['vol_ratio'] = vol_curta / vol_longa
 
-    # Posição no Canal
     max_20 = df['high'].rolling(20).max()
     min_20 = df['low'].rolling(20).min()
     df['pos_canal'] = (df['close'] - min_20) / (max_20 - min_20)
 
-    # Tendência EMA
     ema9 = df.ta.ema(close=df['close'], length=9)
     ema21 = df.ta.ema(close=df['close'], length=21)
     df['trend_str'] = (ema9 - ema21) / ema21
 
-    # Volume Surge
     vol_med = df['volume'].rolling(20).mean()
     df['vol_surge'] = df['volume'] / vol_med
 
-    # Contexto BTC
     df['btc_mom'] = df['btc_close'].pct_change(5)
     df['rel_str'] = df['mom_5'] - df['btc_mom']
 
-    # 3. Limpeza de Nulos (Crucial antes do Target)
+    # 3. Limpeza
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.dropna(inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    # 4. Target Inteligente
-    # Como resetamos o index acima, o shift vai funcionar perfeitamente
+    # 4. Target (Para análise futura, a IA RL não usa isso diretamente)
     future_return = df['close'].shift(-HORIZONTE_ALVO) / df['close'] - 1
-    
-    # Filtro de Volatilidade (Não operar no caos)
-    # Usamos a vol_longa que já calculamos (recuperando pelo index)
-    # Nota: Como dropamos linhas, precisamos recalcular ou garantir alinhamento
-    # Simplificando: Recalculamos vol_longa limpa
     vol_check = df['close'].pct_change().rolling(20).std()
-    
-    valid_trade = vol_check < 0.02 # < 2% volatilidade
+    valid_trade = vol_check < 0.02 
     
     conditions = [
         (future_return > ALVO_LUCRO) & valid_trade,
@@ -101,7 +88,6 @@ def processar_fusao(df_moeda, df_btc):
     choices = [1, 2]
     df['target'] = np.select(conditions, choices, default=0)
 
-    # Remove os últimos candles que não têm futuro (Target NaN ou falso)
     return df.iloc[:-HORIZONTE_ALVO]
 
 def main():
@@ -113,7 +99,7 @@ def main():
     moedas = obter_top_50_moedas(con)
     dfs = []
     
-    print(f"🚜 Minerando V11 Fusion...")
+    print(f"🚜 Minerando V11 Fusion (Com 'close' incluso)...")
     for i, par in enumerate(moedas):
         if par == "BTCUSDT": continue
         print(f"[{i+1}/{len(moedas)}] {par}...", end="\r")
@@ -123,17 +109,17 @@ def main():
             try:
                 df_proc = processar_fusao(df_raw, df_btc)
                 
+                # --- CORREÇÃO: ADICIONADO 'close' À LISTA ---
                 cols = [
+                    'close',  # <--- ESSENCIAL PARA O GÊNESIS
                     'mom_3', 'mom_5', 'mom_10', 'vol_ratio', 'pos_canal', 
                     'trend_str', 'vol_surge', 'btc_mom', 'rel_str',
                     'target', 'timestamp'
                 ]
-                # Verifica se colunas existem
+                
                 if all(c in df_proc.columns for c in cols):
                     dfs.append(df_proc[cols])
-            except Exception as e:
-                # print(f"Erro em {par}: {e}")
-                pass
+            except: pass
             
     if dfs:
         print("\n🌪️ Unificando V11...")
@@ -142,9 +128,8 @@ def main():
         df_final.drop(columns=['timestamp'], inplace=True)
         
         df_final.to_csv("dataset_v11_fusion.csv", index=False)
-        wins = len(df_final[df_final['target']!=0])
-        print(f"\n💾 DATASET V11 GERADO! {len(df_final)} linhas.")
-        print(f"📊 Oportunidades: {wins} ({(wins/len(df_final))*100:.1f}%)")
+        print(f"\n💾 DATASET CORRIGIDO! {len(df_final)} linhas.")
+        print("👉 Agora o 'train_genesis.py' vai funcionar!")
     else:
         print("\n❌ Erro na geração.")
 

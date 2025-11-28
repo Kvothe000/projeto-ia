@@ -1,56 +1,57 @@
-# Genesis_AI/train_genesis.py
+# Genesis_AI/train_genesis.py (VERSÃO WIN-COMPATIBLE)
 import pandas as pd
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
-from sb3_contrib import RecurrentPPO # <--- LSTM (Memória)
+from stable_baselines3.common.vec_env import DummyVecEnv # <--- MUDANÇA IMPORTANTE
+from sb3_contrib import RecurrentPPO
 from crypto_env_advanced import AdvancedCryptoTradingEnv
 import os
 
 # Config
-DADOS_PATH = "../Binance/dataset_v11_fusion.csv" # Usa nossos melhores dados
+DADOS_PATH = "../Binance/dataset_v11_fusion.csv"
 MODELO_PATH = "cerebros/genesis_lstm_v1"
 LOG_DIR = "logs"
 
 def treinar_genesis():
-    print("🧬 INICIANDO PROJETO GÊNESIS (LSTM + PPO)...")
+    print("🧬 INICIANDO GÊNESIS (MODO SINGLE PROCESS)...")
     
-    # 1. Carrega Memória Histórica
     if not os.path.exists(DADOS_PATH):
-        print("❌ Erro: Gere o dataset V11 primeiro na pasta Binance!")
+        print("❌ Erro: Dataset não encontrado.")
         return
         
     df = pd.read_csv(DADOS_PATH)
-    # Limpeza: A IA só come números
+    
+    # LIMPEZA CRÍTICA
+    # Remove colunas de texto e garante que 'close' está lá
     df = df.select_dtypes(include=['float64', 'int64'])
+    
+    # Remove target antigo se existir (para não viciar a IA)
     if 'target' in df.columns: df = df.drop(columns=['target'])
     
-    print(f"📚 Memória Carregada: {len(df)} momentos de mercado.")
+    print(f"📚 Dados carregados: {len(df)} linhas. Colunas: {len(df.columns)}")
 
-    # 2. Cria o Ambiente (Multi-Processado para velocidade)
-    # Criamos 4 clones da IA para aprenderem em paralelo
-    env = SubprocVecEnv([lambda: AdvancedCryptoTradingEnv(df) for _ in range(4)])
+    # CRIA O AMBIENTE (Processo Único para evitar erro no Windows)
+    # env = SubprocVecEnv(...) -> CAUSA ERRO NO WINDOWS
+    env = DummyVecEnv([lambda: AdvancedCryptoTradingEnv(df)])
 
-    # 3. O Cérebro (Recurrent PPO)
-    # MlpLstmPolicy = Cérebro com Memória de Curto Prazo
-    print("🧠 Instanciando Rede Neural Recorrente (LSTM)...")
+    print("🧠 Instanciando Rede Neural LSTM...")
     model = RecurrentPPO(
         "MlpLstmPolicy", 
         env, 
         verbose=1,
         learning_rate=0.0003,
-        n_steps=512,
-        batch_size=128,
-        gamma=0.995, # Visão de longo prazo
+        n_steps=1024, # Steps menores para feedback mais rápido
+        batch_size=64,
+        gamma=0.99,
         tensorboard_log=LOG_DIR
     )
 
-    # 4. Educação Intensiva
-    print("🎓 Iniciando treinamento intensivo (1 Milhão de Steps)...")
-    model.learn(total_timesteps=1_000_000)
-    
-    # 5. Salvar
-    model.save(MODELO_PATH)
-    print(f"💾 Gênesis V1 Salva! Cérebro guardado em {MODELO_PATH}")
+    print("🎓 Iniciando treino (Isso vai demorar um pouco)...")
+    try:
+        model.learn(total_timesteps=1_000_000, progress_bar=True)
+        model.save(MODELO_PATH)
+        print(f"✅ TREINO CONCLUÍDO! Cérebro salvo em {MODELO_PATH}")
+    except Exception as e:
+        print(f"❌ Erro durante o treino: {e}")
 
 if __name__ == "__main__":
     treinar_genesis()
