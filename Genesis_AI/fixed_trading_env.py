@@ -1,134 +1,131 @@
-# Genesis_AI/fixed_trading_env.py (VERSÃO FLEXÍVEL)
+# Genesis_AI/fixed_trading_env.py (CORRIGIDO PELO COLEGA)
 import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 import pandas as pd
-from gymnasium import spaces
 
 class RealisticTradingEnv(gym.Env):
-    def __init__(self, df_norm, df_price, initial_balance=10000, lookback_window=50):
+    """
+    AMBIENTE V13 - Lógica Financeira Corrigida + Observação Simplificada
+    """
+    def __init__(self, df_norm, df_price, initial_balance=10000, lookback_window=30):
         super(RealisticTradingEnv, self).__init__()
         
-        # Dados Normalizados (O que a IA vê)
-        self.df = df_norm
+        # Dados
+        self.df = df_norm.reset_index(drop=True)
         
-        # Preço REAL (Para calcular lucro) - CORREÇÃO DE FLEXIBILIDADE
+        # Preço Real (Flexível)
         if isinstance(df_price, pd.DataFrame) and 'close' in df_price.columns:
             self.price_data = df_price['close'].values
         elif hasattr(df_price, 'values'):
-             # Se for Series ou DataFrame sem coluna 'close' explícita
             self.price_data = df_price.values
         else:
             self.price_data = np.array(df_price)
-            
-        # Garante array 1D (Lista simples)
-        if len(self.price_data.shape) > 1:
-            self.price_data = self.price_data.flatten()
+        if len(self.price_data.shape) > 1: self.price_data = self.price_data.flatten()
 
         self.initial_balance = initial_balance
         self.lookback_window = lookback_window
         
-        # Ações
-        self.action_space = spaces.Discrete(4)
+        # Ações: 0=HOLD, 1=BUY, 2=SELL
+        self.action_space = spaces.Discrete(3)
         
-        # Espaço de observação
+        # OBSERVAÇÃO: Vetor Achatado (Flattened)
+        # Window * Features = Vetor único (Mais fácil para MLP)
+        n_features = self.df.shape[1]
+        self.obs_shape = lookback_window * n_features
         self.observation_space = spaces.Box(
-            low=-5, high=5, 
-            shape=(lookback_window, self.df.shape[1]), 
+            low=-10, high=10, 
+            shape=(self.obs_shape,), 
             dtype=np.float32
         )
         
-        self.taxa = 0.0005
         self.reset()
-    
-    def _safe_normalize(self, df):
-        df_normalized = df.copy()
-        df_normalized = df_normalized.select_dtypes(include=[np.number])
-        
-        for col in df_normalized.columns:
-            if df_normalized[col].std() > 0:
-                df_normalized[col] = (df[col] - df[col].mean()) / df[col].std()
-                df_normalized[col] = np.clip(df_normalized[col], -5, 5)
-            else:
-                df_normalized[col] = 0.0
-        
-        return df_normalized.fillna(0)
-    
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.balance = self.initial_balance
-        self.net_worth = self.initial_balance
         self.current_step = self.lookback_window
-        self.position = 0 
+        self.balance = self.initial_balance
+        self.position = 0 # 0=Flat, 1=Long, -1=Short
+        self.position_size = 0.0
         self.entry_price = 0.0
+        self.portfolio_value = self.initial_balance
+        self.prev_portfolio_value = self.initial_balance
         
         return self._get_observation(), {}
-    
+
     def _get_observation(self):
+        # Pega janela de dados
         start = self.current_step - self.lookback_window
-        obs = self.df.iloc[start:self.current_step].values
+        end = self.current_step
         
+        # Garante limites
+        if start < 0: 
+            obs = np.zeros((self.lookback_window, self.df.shape[1]))
+        else:
+            obs = self.df.iloc[start:end].values
+            
+        # Padding se faltar dados
         if len(obs) < self.lookback_window:
              padding = np.zeros((self.lookback_window - len(obs), self.df.shape[1]))
              obs = np.vstack([padding, obs])
 
-        return obs.astype(np.float32)
-    
+        # ACHATA PARA VETOR (A grande mudança)
+        return obs.flatten().astype(np.float32)
+
     def step(self, action):
+        # 1. Avança Tempo
         self.current_step += 1
-        
         if self.current_step >= len(self.df) - 1:
-            return self._get_observation(), 0, True, False, {'net_worth': self.net_worth}
-        
-        # Preços Reais
+            return self._get_observation(), 0, True, False, {'net_worth': self.portfolio_value}
+
+        # 2. Dados Atuais
         current_price = self.price_data[self.current_step]
         
-        # Lógica de Posição
-        reward = 0
-        
-        # 3: Close
-        if action == 3 and self.position != 0: 
-            pnl = 0
-            if self.position == 1: pnl = (current_price - self.entry_price) / self.entry_price
-            elif self.position == -1: pnl = (self.entry_price - current_price) / self.entry_price
+        # 3. Executa Ação (Lógica Financeira Corrigida)
+        # Se mudar de posição, fecha a anterior primeiro
+        if self.position != 0 and ((action == 1 and self.position == -1) or (action == 2 and self.position == 1)):
+            # Fecha posição atual
+            if self.position == 1: # Fecha Long
+                pnl = (current_price - self.entry_price) * self.position_size
+            else: # Fecha Short
+                pnl = (self.entry_price - current_price) * self.position_size
             
-            self.net_worth += (self.net_worth * pnl) - (self.net_worth * self.taxa)
+            self.balance += pnl
             self.position = 0
+            self.position_size = 0
+
+        # Abre Nova Posição (se não estiver posicionado ou tiver virado a mão)
+        if action == 1 and self.position == 0: # BUY
+            self.position = 1
+            self.entry_price = current_price
+            # Usa 95% do saldo para margem (simples)
+            self.position_size = (self.balance * 0.95) / current_price
             
-        # 1: Long
-        elif action == 1: 
-            if self.position == 0: 
-                self.position = 1
-                self.entry_price = current_price
-                self.net_worth -= self.net_worth * self.taxa
-            elif self.position == -1: 
-                self.position = 1
-                self.entry_price = current_price
-                self.net_worth -= self.net_worth * (self.taxa * 2)
+        elif action == 2 and self.position == 0: # SELL
+            self.position = -1
+            self.entry_price = current_price
+            self.position_size = (self.balance * 0.95) / current_price
 
-        # 2: Short
-        elif action == 2: 
-            if self.position == 0:
-                self.position = -1
-                self.entry_price = current_price
-                self.net_worth -= self.net_worth * self.taxa
-            elif self.position == 1:
-                self.position = -1
-                self.entry_price = current_price
-                self.net_worth -= self.net_worth * (self.taxa * 2)
-
-        # Recompensa Contínua (Variação Patrimonial)
-        # Usamos a variação percentual do preço real para ajustar o net_worth simulado
-        prev_price = self.price_data[self.current_step - 1]
-        pct_change = (current_price - prev_price) / prev_price
+        # 4. Calcula Portfolio Value (CORREÇÃO MATEMÁTICA)
+        floating_pnl = 0
+        if self.position == 1:
+            floating_pnl = (current_price - self.entry_price) * self.position_size
+        elif self.position == -1:
+            floating_pnl = (self.entry_price - current_price) * self.position_size
+            
+        self.portfolio_value = self.balance + floating_pnl
         
-        if self.position == 1: 
-            self.net_worth *= (1 + pct_change)
-        elif self.position == -1: 
-            self.net_worth *= (1 - pct_change)
-            
-        # Falência
+        # 5. Recompensa: Variação do Portfolio
+        reward = (self.portfolio_value - self.prev_portfolio_value) / self.prev_portfolio_value
+        self.prev_portfolio_value = self.portfolio_value
+        
+        # Escala a recompensa para a IA sentir mais
+        reward *= 100 
+        
+        # 6. Kill Switch
         terminated = False
-        if self.net_worth <= self.initial_balance * 0.1:
+        if self.portfolio_value < self.initial_balance * 0.5:
             terminated = True
+            reward = -10 # Punição final
             
-        return self._get_observation(), reward, terminated, False, {'net_worth': self.net_worth}
+        return self._get_observation(), reward, terminated, False, {'net_worth': self.portfolio_value}

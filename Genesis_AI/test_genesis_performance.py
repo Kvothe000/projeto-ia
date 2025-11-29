@@ -1,24 +1,26 @@
-# Genesis_AI/test_genesis_performance.py (CORRIGIDO E IMPORTANDO AMBIENTE CERTO)
+# Genesis_AI/test_genesis_performance.py (LIMPO E VINCULADO)
 import pandas as pd
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 import matplotlib.pyplot as plt
 import os
+import sys
 
-# --- IMPORTA O AMBIENTE ROBUSTO (QUE JÁ TEM PREÇO REAL + PROTEÇÃO) ---
-# Certifique-se de que o arquivo fixed_trading_env.py existe na pasta Genesis_AI
+# Adiciona o diretório atual ao path para garantir a importação
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# --- IMPORTA O AMBIENTE ROBUSTO (A FONTE DA VERDADE) ---
 try:
     from fixed_trading_env import RealisticTradingEnv
 except ImportError:
-    # Fallback se rodar de fora da pasta
-    import sys
-    sys.path.append(os.path.dirname(__file__))
-    from fixed_trading_env import RealisticTradingEnv
+    print("❌ ERRO CRÍTICO: Não encontrei 'fixed_trading_env.py'.")
+    print("   Certifique-se de que este arquivo está na pasta Genesis_AI.")
+    exit()
 
 class PerformanceTester:
     def __init__(self, model_path, test_data_path):
-        # 1. Carregar Modelo
+        # 1. Carrega Modelo
         if not os.path.exists(model_path + ".zip"):
              if os.path.exists("cerebros/" + model_path + ".zip"):
                  model_path = "cerebros/" + model_path
@@ -26,35 +28,38 @@ class PerformanceTester:
         print(f"🧠 Carregando modelo: {model_path}")
         self.model = PPO.load(model_path)
         
-        # 2. Carregar Dados Brutos
+        # 2. Carrega e Prepara Dados
         print(f"📚 Carregando dados: {test_data_path}")
         self.raw_df = pd.read_csv(test_data_path)
         
-        # 3. PREPARAR PREÇO REAL (Atributo que faltava!)
+        # Separa Preço Real (Vital para cálculo de lucro)
+        # Tenta 'close', se não tiver usa a primeira coluna
         if 'close' in self.raw_df.columns:
             self.price_data_real = self.raw_df['close']
         else:
-            self.price_data_real = self.raw_df.iloc[:, 0]
+            self.price_data_real = self.raw_df.iloc[:, 0] # Fallback perigoso, mas evita crash
 
-        # 4. PREPARAR DADOS NORMALIZADOS (Z-Score)
+        # Prepara Dados Normalizados (Visão da IA)
         df_num = self.raw_df.select_dtypes(include=[np.number])
-        cols_drop = ['target', 'timestamp']
-        if 'close' in df_num.columns: cols_drop.append('close')
-            
-        df_norm = df_num.drop(columns=[c for c in cols_drop if c in df_num.columns])
+        cols_drop = ['target', 'timestamp', 'close']
+        # Remove apenas o que existe
+        cols_present = [c for c in cols_drop if c in df_num.columns]
+        df_norm = df_num.drop(columns=cols_present)
         
+        # Normalização Z-Score
         self.test_data_norm = (df_norm - df_norm.mean()) / df_norm.std()
         self.test_data_norm = self.test_data_norm.fillna(0).clip(-5, 5)
         
         self.results = {}
 
     def run_backtest_with_env(self, env):
-        """Roda o backtest injetando o ambiente configurado"""
+        """Roda a simulação usando o ambiente configurado externamente"""
         print("🧪 Executando Simulação de Mercado...")
         
         obs = env.reset()
         done = False
         
+        # Tenta pegar saldo inicial do ambiente
         try: initial_balance = env.envs[0].initial_balance
         except: initial_balance = 10000
             
@@ -64,23 +69,18 @@ class PerformanceTester:
             action, _ = self.model.predict(obs, deterministic=True)
             obs, reward, done, info = env.step(action)
             
+            # Captura patrimônio
             net_worth = info[0]['net_worth']
             equity_curve.append(net_worth)
             
         self._analyze_results(equity_curve, initial_balance)
         return self.results
 
-    def run_backtest(self, initial_balance=10000):
-        """Método legado (cria ambiente internamente se chamado direto)"""
-        test_size = int(0.2 * len(self.test_data_norm))
-        test_df_norm = self.test_data_norm.tail(test_size).reset_index(drop=True)
-        test_price = self.price_data_real.tail(test_size).reset_index(drop=True)
-        
-        env = DummyVecEnv([lambda: RealisticTradingEnv(test_df_norm, test_price, initial_balance=initial_balance)])
-        return self.run_backtest_with_env(env)
-
     def _analyze_results(self, equity, initial):
-        total_ret = (equity[-1] - initial) / initial * 100
+        final_val = equity[-1]
+        total_ret = (final_val - initial) / initial * 100
+        
+        # Drawdown
         peak = initial
         max_drawdown = 0
         for value in equity:
@@ -93,7 +93,7 @@ class PerformanceTester:
             'total_return': total_ret,
             'max_drawdown': max_drawdown,
             'equity_curve': equity,
-            'final_balance': equity[-1]
+            'final_balance': final_val
         }
 
     def generate_report(self):
