@@ -1,144 +1,111 @@
-# Binance/dashboard.py (VERSÃO VISUAL COMPLETA)
+# Binance/dashboard.py (DASHBOARD FINANCEIRO)
 import streamlit as st
 import pandas as pd
 import time
-import plotly.express as px
-import plotly.graph_objects as go
 import json
 import os
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="Predador V5 Visual", page_icon="🦅", layout="wide", initial_sidebar_state="collapsed")
-st.title("🦅 Predador V5 - Centro de Inteligência Visual")
+st.set_page_config(page_title="Gênesis Pro", page_icon="🦅", layout="wide")
+st.title("🦅 Gênesis AI - Painel de Controle")
 
-# --- FUNÇÕES ---
-def carregar_csv(arquivo, linhas=100):
-    if os.path.exists(arquivo):
-        try:
-            # Lê apenas as últimas N linhas para ser rápido
-            return pd.read_csv(arquivo).tail(linhas)
-        except: pass
-    return pd.DataFrame()
-
-def carregar_live():
+# Carrega Dados
+def get_data():
+    monitor, wallet, history = {}, {"saldo": 200}, pd.DataFrame()
+    
     if os.path.exists("monitor_live.json"):
-        try:
-            with open("monitor_live.json", 'r') as f: return json.load(f)
+        try: monitor = json.load(open("monitor_live.json"))
         except: pass
-    return None
+        
+    if os.path.exists("bot_wallet.json"):
+        try: wallet = json.load(open("bot_wallet.json"))
+        except: pass
+        
+    if os.path.exists("trades_history.csv"):
+        try: history = pd.read_csv("trades_history.csv")
+        except: pass
+        
+    return monitor, wallet, history
 
-# Dados
-df_trades = carregar_csv("trades_history.csv", 200)
-df_analises = carregar_csv("analysis_history.csv", 300) # Últimas 300 análises
-dados_live = carregar_live()
+monitor, wallet, df_hist = get_data()
 
-# Auto-Refresh
-if st.button('🔄 Atualizar'): st.rerun()
+# --- KPI PRINCIPAL ---
+saldo_atual = wallet.get("saldo", 200.0)
+saldo_inicial = wallet.get("saldo_inicial", 200.0)
+lucro_total_usd = saldo_atual - saldo_inicial
+lucro_total_pct = (lucro_total_usd / saldo_inicial) * 100
 
-# ==================================================
-# 1. RADAR EM TEMPO REAL (TOPO)
-# ==================================================
-col1, col2 = st.columns([3, 1])
+col1, col2, col3, col4 = st.columns(4)
+
 with col1:
-    st.subheader("📡 Radar Ao Vivo")
-    if dados_live and "moedas" in dados_live:
-        df_live = pd.DataFrame(dados_live["moedas"])
-        st.dataframe(
-            df_live.style.applymap(lambda x: 'color: #00FF00' if x=='BUY' else ('color: #FF0000' if x=='SELL' else ''), subset=['sinal']),
-            use_container_width=True,
-            column_config={
-                "confianca": st.column_config.NumberColumn("Confiança", format="%.1f%%"),
-                "adx": st.column_config.ProgressColumn("ADX", min_value=0, max_value=60, format="%.0f"),
-            }
-        )
-    else:
-        st.info("A aguardar dados do Scanner...")
+    st.metric("💰 Saldo Atual", f"${saldo_atual:.2f}", f"{lucro_total_pct:+.2f}%")
 
 with col2:
-    st.subheader("🎯 Status")
-    n_trades = len(df_trades) if not df_trades.empty else 0
-    vol = df_trades['valor_usdt'].sum() if not df_trades.empty else 0
-    st.metric("Trades Hoje", n_trades)
-    st.metric("Volume ($)", f"${vol:,.0f}")
-    if not df_analises.empty:
-        last_conf = df_analises.iloc[-1]['confianca']
-        st.metric("Humor da IA", f"{last_conf}%")
+    if not df_hist.empty:
+        last_trade = df_hist.iloc[-1]
+        pnl = last_trade.get('pnl_pct', 0)
+        if pd.isna(pnl): pnl = 0
+        st.metric("Último Trade", f"{last_trade['par']}", f"{pnl:+.2f}%")
+    else:
+        st.metric("Último Trade", "---", "0%")
+
+with col3:
+    status = "AGUARDANDO"
+    if monitor and "moedas" in monitor:
+        status = monitor["moedas"][0]["sinal"]
+    st.metric("Sinal IA", status)
+
+with col4:
+    trades_hoje = len(df_hist) if not df_hist.empty else 0
+    st.metric("Trades Totais", trades_hoje)
 
 st.markdown("---")
 
-# ==================================================
-# 2. GRÁFICOS DE INTELIGÊNCIA (NOVO!)
-# ==================================================
-st.subheader("🧠 Cérebro da IA (Visualização Temporal)")
+# --- GRÁFICOS E TABELAS ---
+c1, c2 = st.columns([2, 1])
 
-if not df_analises.empty:
-    # Filtro por moeda para o gráfico não ficar bagunçado
-    moedas_disp = df_analises['par'].unique()
-    moeda_selecionada = st.selectbox("Selecione a Moeda para visualizar:", moedas_disp, index=0)
-    
-    # Filtra dados da moeda
-    df_chart = df_analises[df_analises['par'] == moeda_selecionada].copy()
-    
-    # Cria Gráfico Combinado (Preço vs Confiança)
-    fig = go.Figure()
+with c1:
+    st.subheader("📈 Crescimento da Conta")
+    if not df_hist.empty:
+        # Recria curva de saldo baseada no histórico
+        # Começa com saldo inicial e soma os PnLs
+        df_hist['saldo_acumulado'] = saldo_inicial + df_hist['pnl_usd'].cumsum()
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df_hist['data'], y=df_hist['saldo_acumulado'],
+            mode='lines+markers', name='Saldo',
+            line=dict(color='#00ff00', width=2)
+        ))
+        fig.update_layout(
+            template="plotly_dark", 
+            height=350,
+            margin=dict(l=10, r=10, t=30, b=10),
+            title="Evolução do Patrimônio ($)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Aguardando primeiro trade fechado para gerar gráfico.")
 
-    # Linha de Preço (Eixo Y Esquerdo)
-    fig.add_trace(go.Scatter(
-        x=df_chart['data'], y=df_chart['preco'],
-        name='Preço', line=dict(color='white', width=1),
-        yaxis='y1'
-    ))
+with c2:
+    st.subheader("📡 Radar Ao Vivo")
+    if monitor and "moedas" in monitor:
+        st.dataframe(
+            pd.DataFrame(monitor["moedas"]),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.text("Scanner offline...")
 
-    # Linha de Confiança (Eixo Y Direito)
-    # Pinta de Verde se for BUY, Vermelho se for SELL
-    colors = ['green' if s == 'BUY' else ('red' if s == 'SELL' else 'gray') for s in df_chart['sinal']]
-    
-    fig.add_trace(go.Scatter(
-        x=df_chart['data'], y=df_chart['confianca'],
-        name='Confiança IA %', mode='markers+lines',
-        marker=dict(color=colors, size=6),
-        line=dict(color='rgba(255, 255, 255, 0.2)', width=1, dash='dot'),
-        yaxis='y2'
-    ))
-
-    # Layout com Eixo Duplo
-    fig.update_layout(
-        template="plotly_dark",
-        height=400,
-        margin=dict(l=10, r=10, t=30, b=10),
-        yaxis=dict(title="Preço ($)", side="left", showgrid=False),
-        yaxis2=dict(title="Confiança IA (%)", side="right", overlaying="y", showgrid=True, range=[0, 100]),
-        legend=dict(orientation="h", y=1.1)
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Expander para ver os dados brutos da análise
-    with st.expander(f"Ver Log Detalhado de Análises ({len(df_chart)} registros)"):
-        st.dataframe(df_chart.sort_index(ascending=False), use_container_width=True)
-
-else:
-    st.warning("Aguardando dados de análise para gerar gráficos...")
-
-st.markdown("---")
-
-# ==================================================
-# 3. HISTÓRICO DE TRADES (O DINHEIRO)
-# ==================================================
-st.subheader("💰 Histórico de Execuções (Trades)")
-
-if not df_trades.empty:
+# Histórico Recente
+st.subheader("📝 Últimas Operações")
+if not df_hist.empty:
     st.dataframe(
-        df_trades.sort_index(ascending=False).head(100),
-        use_container_width=True,
-        column_config={
-            "lado": st.column_config.TextColumn("Lado"),
-            "resultado": st.column_config.TextColumn("Status"),
-            "valor_usdt": st.column_config.NumberColumn("Valor", format="$%.2f")
-        }
+        df_hist.sort_index(ascending=False).head(10),
+        use_container_width=True
     )
-else:
-    st.text("Nenhum trade executado ainda.")
 
-# Refresh Automático
+# Auto-Refresh
 time.sleep(2)
 st.rerun()

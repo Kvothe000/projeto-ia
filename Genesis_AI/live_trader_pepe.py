@@ -10,28 +10,23 @@ import os
 from stable_baselines3 import PPO
 
 # --- CONFIGURAÇÕES ESPECÍFICAS (MUDE AQUI) ---
-PAR_ALVO = "WLDUSDT" # ou "WLDUSDT"
-MODELO_NOME = "genesis_wld_v1" # ou "genesis_wld_v1"
-DATASET_TREINO = "dataset_wld_clean.csv" # ou "dataset_wld_clean.csv"
+PAR_ALVO = "1000PEPEUSDT" # ou "WLDUSDT"
+MODELO_NOME = "genesis_pepe_v1" # ou "genesis_wld_v1"
+DATASET_TREINO = "dataset_pepe_clean.csv" # ou "dataset_wld_clean.csv"
 # ----------------------------------------------
 
 TIMEFRAME = "15m"
-WINDOW_SIZE = 30 
+WINDOW_SIZE = 50
 ALAVANCAGEM = 5
 
 # --- A CATRACA DE LUCRO (Trailing Stop) ---
 # Formato: (Lucro Atingido, Stop Garantido)
 # Ex: Se bater 1.2%, garante 0.5%. Se bater 2%, garante 1.5%.
 DEGRAUS_PROFIT = [
-    (0.008, 0.004), # Nível 1: Pagou taxas (0.8% -> 0.2%)
-    (0.010, 0.006), # Nível 2: Meta Mínima (1.2% -> 0.6%)
-    (0.012, 0.008), # Nível 3: Surfando (2.0% -> 1.2%)
-    (0.015, 0.010), # Nível 4: Lua (4.0% -> 3.0%)
-    (0.018, 0.013), # Nível 4: Lua (4.0% -> 3.0%)
-    (0.020, 0.015), # Nível 4: Lua (4.0% -> 3.0%)
-    (0.025, 0.020), # Nível 4: Lua (4.0% -> 3.0%)
-    (0.030, 0.025), # Nível 4: Lua (4.0% -> 3.0%)
-    (0.035, 0.030), # Nível 4: Lua (4.0% -> 3.0%)
+    (0.008, 0.002), # Nível 1: Pagou taxas (0.8% -> 0.2%)
+    (0.012, 0.006), # Nível 2: Meta Mínima (1.2% -> 0.6%)
+    (0.020, 0.012), # Nível 3: Surfando (2.0% -> 1.2%)
+    (0.040, 0.030), # Nível 4: Lua (4.0% -> 3.0%)
 ]
 
 # Imports de Sistema

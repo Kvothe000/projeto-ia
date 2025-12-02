@@ -9,7 +9,7 @@ import os
 def run():
     print("🧪 TESTANDO GÊNESIS WLD (Janela 50)...")
     
-    model_path = "Genesis_AI/cerebros/genesis_wld_clean"
+    model_path = "Genesis_AI/cerebros/genesis_wld_v1"
     data_path = "../Binance/dataset_wld_clean.csv"
 
     if not os.path.exists(model_path + ".zip"):
@@ -37,7 +37,7 @@ def run():
     env = DummyVecEnv([lambda: RealisticTradingEnv(
         df_norm, 
         price_data, 
-        lookback_window=50
+        lookback_window=30
     )])
     # -----------------------------------------------------------
     

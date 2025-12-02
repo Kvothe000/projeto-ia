@@ -1,1 +1,23 @@
-{"ultima_atualizacao": "13:33:56", "moedas": [{"par": "WLDUSDT", "preco": 0.6364, "adx": 19.2, "sinal": "BUY", "confianca": 100, "status_adx": "GENESIS-WLD"}]}
+{
+    "ultima_atualizacao": "13:10:21",
+    "saldo_atual": 207.9175838645313,
+    "moedas": [
+        {
+            "par": "1000PEPEUSDT",
+            "preco": 0.0044779,
+            "adx": 0,
+            "sinal": "BUY",
+            "confianca": 100,
+            "status_adx": "ACTIVE"
+        },
+        {
+            "par": "WLDUSDT",
+            "preco": 0.6586,
+            "adx": 0,
+            "sinal": "SELL",
+            "confianca": 100,
+            "status_adx": "ACTIVE"
+        }
+    ],
+    "saldo_total": 229.7236158548365
+}
