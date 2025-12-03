@@ -1,16 +1,17 @@
-# Genesis_AI/fixed_trading_env.py (CORREÇÃO MATEMÁTICA PnL)
+# Genesis_AI/fixed_trading_env.py (VERSÃO V2 - BONUS 1%)
 import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 import pandas as pd
-from gymnasium import spaces
 
 class RealisticTradingEnv(gym.Env):
     def __init__(self, df_norm, df_price, initial_balance=10000, lookback_window=50):
         super(RealisticTradingEnv, self).__init__()
         
+        # Dados
         self.df = df_norm
         
-        # Tratamento de Preço
+        # Tratamento Flexível de Preço
         if isinstance(df_price, pd.DataFrame) and 'close' in df_price.columns:
             self.price_data = df_price['close'].values
         elif hasattr(df_price, 'values'):
@@ -22,27 +23,30 @@ class RealisticTradingEnv(gym.Env):
 
         self.initial_balance = initial_balance
         self.lookback_window = lookback_window
+        
+        # AÇÕES: 0=HOLD, 1=BUY, 2=SELL, 3=CLOSE
         self.action_space = spaces.Discrete(4)
         
         # Observação
         self.obs_shape = lookback_window * self.df.shape[1]
-        self.observation_space = spaces.Box(low=-10, high=10, shape=(self.obs_shape,), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=-10, high=10, 
+            shape=(self.obs_shape,), 
+            dtype=np.float32
+        )
         
-        self.taxa = 0.0005
+        self.taxa = 0.0005 # 0.05%
         self.reset()
     
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = self.lookback_window
         
-        # Saldo Disponível (Cash)
         self.balance = self.initial_balance
-        # Patrimônio Total (Cash + Posição Aberta)
         self.net_worth = self.initial_balance
         
         self.position = 0 
         self.entry_price = 0.0
-        # Tamanho da posição em Dólares (fixo na entrada)
         self.position_vol_usd = 0.0 
         
         return self._get_observation(), {}
@@ -63,54 +67,65 @@ class RealisticTradingEnv(gym.Env):
         current_price = self.price_data[self.current_step]
         reward = 0
         
-        # --- 1. CÁLCULO DO PnL FLUTUANTE (CORREÇÃO) ---
+        # PnL Flutuante
         unrealized_pnl = 0
+        pct_change_trade = 0
+        
         if self.position != 0:
             if self.position == 1: # Long
-                pct_change = (current_price - self.entry_price) / self.entry_price
+                pct_change_trade = (current_price - self.entry_price) / self.entry_price
             else: # Short
-                pct_change = (self.entry_price - current_price) / self.entry_price
+                pct_change_trade = (self.entry_price - current_price) / self.entry_price
             
-            # Lucro = Valor Apostado * % Variação
-            unrealized_pnl = self.position_vol_usd * pct_change
+            unrealized_pnl = self.position_vol_usd * pct_change_trade
 
-        # Atualiza Patrimônio Total (Sem juros compostos)
         self.net_worth = self.balance + unrealized_pnl
 
-        # --- 2. EXECUÇÃO DE AÇÕES ---
+        # --- LÓGICA DE EXECUÇÃO E RECOMPENSA ---
         
         # FECHAR (Close) ou INVERTER
         if self.position != 0 and ((action == 3) or (action == 1 and self.position == -1) or (action == 2 and self.position == 1)):
-            # Realiza o Lucro/Prejuízo
+            # Realiza o Trade
             self.balance += unrealized_pnl
-            self.balance -= self.position_vol_usd * self.taxa # Taxa Saída
+            custo = self.position_vol_usd * self.taxa
+            self.balance -= custo
             
-            reward = unrealized_pnl # A recompensa é o dinheiro ganho
+            # A recompensa base é o lucro em Dólar (normalizado para não explodir)
+            # Ex: Ganhou $100 em $10000 = +1.0
+            reward = (unrealized_pnl - custo) / self.initial_balance * 100
             
-            # Zera
+            # --- BÔNUS DA RIQUEZA (O SEGREDO DO 1%) ---
+            # Se o lucro líquido for maior que 1% (0.01), dá um prêmio extra!
+            if pct_change_trade >= 0.01:
+                reward += 5.0 # Dopamina maciça para a IA priorizar alvos de 1%
+                # print(f"🎯 BÔNUS 1% ATINGIDO! Lucro: {pct_change_trade*100:.2f}%")
+
+            # Punição por prejuízo (Dor)
+            if pct_change_trade < 0:
+                reward *= 1.5 # A dor da perda é maior que a alegria do ganho (Psicologia)
+
+            # Zera Posição
             self.position = 0
             self.position_vol_usd = 0
             self.entry_price = 0
-            unrealized_pnl = 0
 
-        # ABRIR (Se estiver zerado)
+        # ABRIR (Se zerado)
         if self.position == 0 and action in [1, 2]:
             self.position = 1 if action == 1 else -1
             self.entry_price = current_price
-            
-            # Aposta 100% do saldo atual (Simulação de All-In Composto por Trade, não por candle)
-            # Ou use um valor fixo para ser mais conservador
+            # Aposta 100% do saldo (Juros Compostos Simulado no Treino)
             self.position_vol_usd = self.balance 
-            
-            self.balance -= self.position_vol_usd * self.taxa # Taxa Entrada
-            
-            # Recalcula Net Worth inicial pós-taxa
+            self.balance -= self.position_vol_usd * self.taxa 
             self.net_worth = self.balance 
 
-        # --- 3. PROTEÇÃO E FIM ---
+        # Punição leve por ficar exposto sem lucro (Time Decay)
+        if self.position != 0 and pct_change_trade <= 0:
+            reward -= 0.01
+
+        # Fim do Jogo (Falência)
         terminated = False
-        if self.net_worth <= self.initial_balance * 0.5: # Perdeu 50%
+        if self.net_worth <= self.initial_balance * 0.5: 
             terminated = True
-            reward = -100 # Punição
+            reward = -100 # Punição máxima
 
         return self._get_observation(), reward, terminated, False, {'net_worth': self.net_worth}

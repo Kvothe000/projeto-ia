@@ -9,7 +9,7 @@ import os
 def run():
     print("🧪 TESTANDO GÊNESIS WLD (Janela 50)...")
     
-    model_path = "Genesis_AI/cerebros/genesis_wld_v1"
+    model_path = "Genesis_AI/cerebros/genesis_wld_v2"
     data_path = "../Binance/dataset_wld_clean.csv"
 
     if not os.path.exists(model_path + ".zip"):

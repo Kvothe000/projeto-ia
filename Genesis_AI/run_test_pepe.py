@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from fixed_trading_env import RealisticTradingEnv
 
 # CONFIGURAÇÃO
-MODELO_PATH = "cerebros/genesis_pepe_v1"
+MODELO_PATH = "Genesis_AI/cerebros/genesis_pepe_v1"
 DADOS_PATH = "../Binance/dataset_pepe_clean.csv"
 WINDOW_SIZE = 50 # O treino da PEPE usou 50
 

@@ -14,7 +14,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_TREINO_ORIGINAL = os.path.join(BASE_DIR, "..", "dataset_wld_clean.csv")
 MEMORIA_RECENTE = os.path.join(BASE_DIR, "genesis_memory.csv")
 # Aponta para o cérebro que estamos usando
-MODELO_ATUAL = os.path.join(BASE_DIR, "cerebros", "genesis_wld_v1") # ou genesis_v12_final
+MODELO_ATUAL = os.path.join(BASE_DIR, "cerebros", "genesis_wld_v2") # ou genesis_v12_final
 WINDOW_SIZE = 30 
 
 def ciclo_de_sono():

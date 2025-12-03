@@ -1,23 +1,23 @@
 {
-    "ultima_atualizacao": "13:10:21",
+    "ultima_atualizacao": "21:11:28",
     "saldo_atual": 207.9175838645313,
     "moedas": [
         {
             "par": "1000PEPEUSDT",
-            "preco": 0.0044779,
-            "adx": 0,
-            "sinal": "BUY",
+            "preco": 0.0045878,
+            "adx": 66.3,
+            "sinal": "CLOSE",
             "confianca": 100,
-            "status_adx": "ACTIVE"
+            "status_adx": "GENESIS-PEPE"
         },
         {
             "par": "WLDUSDT",
-            "preco": 0.6586,
-            "adx": 0,
-            "sinal": "SELL",
-            "confianca": 100,
-            "status_adx": "ACTIVE"
+            "preco": 0.6302,
+            "adx": 20.7,
+            "sinal": "NEUTRO",
+            "confianca": 0,
+            "status_adx": "LIVE"
         }
     ],
-    "saldo_total": 229.7236158548365
+    "saldo_total": 202.350150730592
 }
