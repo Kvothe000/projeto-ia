@@ -19,8 +19,8 @@ EMAIL_DESTINATARIOS = ["azirmatheus@gmail.com"]
 # =============================================================================
 
 # --- CONFIGURAÇÕES DE CAPITAL ---
-CAPITAL_TOTAL = 500.0           # Capital base em USD (será atualizado se ler carteira)
-RISCO_POR_TRADE = 5.0           # % do capital a arriscar por operação (PROFISSIONAL: 1-2%)
+CAPITAL_TOTAL = 100.0           # Capital base em USD (será atualizado se ler carteira)
+RISCO_POR_TRADE = 1.5          # % do capital a arriscar por operação (PROFISSIONAL: 1-2%)
 
 # --- PERFIL DE RISCO/RETORNO DIFERENCIADO ---
 RISCO_RETORNO_SPOT = 2.5        # Spot: Busca movimentos maiores (Swing Trade)

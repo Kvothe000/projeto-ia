@@ -26,8 +26,8 @@ def resetar_tudo():
             
     # 2. Cria a Carteira Nova Zerada ($200)
     wallet = {
-        "saldo": 200.0,          # Saldo Disponível
-        "saldo_inicial": 200.0,  # Referência para cálculo de lucro total
+        "saldo": 0,          # Saldo Disponível
+        "saldo_inicial": 0,  # Referência para cálculo de lucro total
         "em_uso": 0.0            # Quanto está preso em trades agora
     }
     

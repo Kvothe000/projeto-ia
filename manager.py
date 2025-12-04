@@ -1,4 +1,4 @@
-# Binance/manager.py (VERSÃO BANQUEIRO BLINDADO)
+# Binance/manager.py (BANQUEIRO SINCRONIZADO)
 import json
 import os
 import pandas as pd
@@ -14,13 +14,19 @@ ARQUIVO_HISTORICO = os.path.join(BASE_DIR, "trades_history.csv")
 ARQUIVO_MONITOR = os.path.join(BASE_DIR, "monitor_live.json")
 
 class GerenciadorEstado:
-    def __init__(self, saldo_inicial=200.0):
+    def __init__(self, saldo_inicial=None):
+        """
+        saldo_inicial: Se fornecido (via API Binance), atualiza o cofre.
+        """
         self.dados = self._carregar_json(ARQUIVO_ESTADO)
         self._garantir_carteira(saldo_inicial)
         self._inicializar_historico()
+        
+        # Sincroniza saldo inicial se fornecido (Conexão Real)
+        if saldo_inicial is not None:
+            self.sincronizar_saldo_real(saldo_inicial)
 
     def _carregar_json(self, arquivo):
-        # Tenta ler com retry para evitar conflito de leitura/escrita
         for _ in range(10):
             if os.path.exists(arquivo):
                 try:
@@ -30,7 +36,6 @@ class GerenciadorEstado:
         return {}
 
     def _salvar_json(self, arquivo, dados):
-        # Tenta salvar com retry
         for _ in range(10):
             try:
                 with open(arquivo, 'w') as f: json.dump(dados, f, indent=4)
@@ -39,8 +44,14 @@ class GerenciadorEstado:
 
     def _garantir_carteira(self, saldo_inicial):
         if not os.path.exists(ARQUIVO_WALLET):
-            # Se não existe, cria. Se existe, RESPEITA o saldo atual.
-            carteira = {"saldo": saldo_inicial, "saldo_inicial": saldo_inicial, "em_uso": 0.0}
+            val = saldo_inicial if saldo_inicial else 0.0
+            # data_referencia serve para saber quando resetar o PnL diário
+            carteira = {
+                "saldo": val, 
+                "saldo_inicial_dia": val, 
+                "em_uso": 0.0,
+                "data_referencia": datetime.now().strftime("%Y-%m-%d")
+            }
             self._salvar_json(ARQUIVO_WALLET, carteira)
 
     def _inicializar_historico(self):
@@ -49,35 +60,48 @@ class GerenciadorEstado:
                 "data", "par", "lado", "preco", "qtd", "valor_usdt", "pnl_usd", "pnl_pct", "tipo", "saldo_total"
             ]).to_csv(ARQUIVO_HISTORICO, index=False)
 
-    # --- GESTÃO FINANCEIRA (O COFRE ÚNICO) ---
+    # --- GESTÃO FINANCEIRA ---
+    
+    def sincronizar_saldo_real(self, saldo_real_binance):
+        """Atualiza o cofre com o que realmente tem na Binance"""
+        carteira = self._carregar_json(ARQUIVO_WALLET)
+        
+        # Verifica virada de dia para resetar meta diária
+        hoje = datetime.now().strftime("%Y-%m-%d")
+        if carteira.get("data_referencia") != hoje:
+            print(f"📅 NOVO DIA DETECTADO! Resetando Saldo Inicial de Referência: ${saldo_real_binance:.2f}")
+            carteira["saldo_inicial_dia"] = saldo_real_binance
+            carteira["data_referencia"] = hoje
+        
+        # Se não tivermos trades abertos (em_uso == 0), o saldo real é o saldo total
+        if carteira.get("em_uso", 0) == 0:
+            carteira["saldo"] = saldo_real_binance
+        
+        # Se for a primeira vez
+        if carteira.get("saldo_inicial_dia") == 0:
+             carteira["saldo_inicial_dia"] = saldo_real_binance
+
+        self._salvar_json(ARQUIVO_WALLET, carteira)
+
     def obter_saldo_disponivel(self):
-        """Retorna apenas o dinheiro que NÃO está em uso"""
         c = self._carregar_json(ARQUIVO_WALLET)
         return c.get("saldo", 0.0)
 
     def reservar_capital(self):
-        """
-        Tenta pegar TODO o dinheiro para um trade.
-        Retorna: Valor (float) ou 0 se estiver ocupado.
-        """
-        # Lógica atômica simulada: Lê -> Verifica -> Grava rápido
+        """Pega TUDO (All-In)"""
         carteira = self._carregar_json(ARQUIVO_WALLET)
         disponivel = carteira.get("saldo", 0.0)
         
-        # Margem mínima de segurança ($10)
-        if disponivel < 10: return 0.0
+        if disponivel < 5: return 0.0 # Mínimo da Binance
         
         valor_reserva = disponivel
-        
-        # Zera o saldo e move para "em uso"
         carteira["saldo"] = 0.0
         carteira["em_uso"] = valor_reserva
         self._salvar_json(ARQUIVO_WALLET, carteira)
-        
         return valor_reserva
 
     def devolver_capital(self, valor_retornado):
-        """Recebe o dinheiro de volta (Capital + Lucro)"""
+        """Devolve ao cofre"""
         carteira = self._carregar_json(ARQUIVO_WALLET)
         carteira["saldo"] = valor_retornado
         carteira["em_uso"] = 0.0
@@ -86,7 +110,6 @@ class GerenciadorEstado:
 
     # --- LOGS E DASHBOARD ---
     def registrar_trade(self, par, lado, preco, qtd, valor_usdt, tipo, pnl_usd=0, pnl_pct=0):
-        # Calcula saldo total (Livre + O que acabou de sair/entrar)
         c = self._carregar_json(ARQUIVO_WALLET)
         total = c.get("saldo", 0) + c.get("em_uso", 0)
         
@@ -103,27 +126,31 @@ class GerenciadorEstado:
         except: pass
 
     def atualizar_monitor(self, dados_par):
-        """Atualiza status para o Dashboard"""
         try:
             monitor = self._carregar_json(ARQUIVO_MONITOR)
             if "moedas" not in monitor: monitor["moedas"] = []
             
-            # Remove entrada antiga deste par e põe a nova
             novas = [m for m in monitor["moedas"] if m["par"] != dados_par[0]["par"]]
             novas.extend(dados_par)
             
             c = self._carregar_json(ARQUIVO_WALLET)
             total = c.get("saldo", 0) + c.get("em_uso", 0)
+            
+            # Adiciona dados de performance diária para o Dashboard
+            saldo_ini = c.get("saldo_inicial_dia", total)
+            lucro_dia = total - saldo_ini
+            pct_dia = (lucro_dia / saldo_ini * 100) if saldo_ini > 0 else 0
 
             monitor["moedas"] = novas
             monitor["ultima_atualizacao"] = datetime.now().strftime("%H:%M:%S")
             monitor["saldo_total"] = total
+            monitor["lucro_dia_usd"] = lucro_dia
+            monitor["lucro_dia_pct"] = pct_dia
             
             self._salvar_json(ARQUIVO_MONITOR, monitor)
         except: pass
         
     def pode_enviar_alerta(self, par, timeframe):
-        # Cooldown básico
         if par in self.dados:
             try:
                 ultimo = datetime.fromisoformat(self.dados[par])

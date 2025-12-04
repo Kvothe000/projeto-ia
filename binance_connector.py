@@ -1,93 +1,131 @@
-# Binance/binance_connector.py - VERSÃO CORRIGIDA (INT TIMESTAMP)
-import pandas as pd
+# Binance/binance_connector.py
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from binance.enums import *
+import pandas as pd
 import config
-import time
+import math
 
 class BinanceConnector:
     def __init__(self):
+        self.client = Client(config.BINANCE_API_KEY, config.BINANCE_API_SECRET)
+
+    def obter_saldo_usdt(self):
+        """Retorna o saldo livre em USDT na carteira de Futuros"""
         try:
-            self.client = Client(config.BINANCE_API_KEY, config.BINANCE_API_SECRET)
-            print("✅ Conexão Binance OK")
+            account = self.client.futures_account_balance()
+            for asset in account:
+                if asset['asset'] == 'USDT':
+                    return float(asset['balance']) # Saldo Total (Livre + Usado)
+                    # Ou asset['withdrawAvailable'] para apenas o livre
+            return 0.0
         except Exception as e:
-            print(f"❌ Erro Conexão: {e}")
-            raise
+            print(f"❌ Erro ao ler saldo Binance: {e}")
+            return 0.0
+
+    def buscar_candles(self, par, timeframe, limit=100):
+        try:
+            klines = self.client.futures_klines(symbol=par, interval=timeframe, limit=limit)
+            return self._tratar_df(klines)
+        except Exception as e:
+            print(f"⚠️ Erro API ({par}): {e}")
+            return None
 
     def _tratar_df(self, klines):
-        if not klines: return None
-        cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'ct', 'qav', 'nt', 'taker_buy_base', 'tbq', 'ig']
-        df = pd.DataFrame(klines, columns=cols)
-        
-        # --- CORREÇÃO CRÍTICA: TIMESTAMP COMO INTEIRO ---
-        df['timestamp'] = df['timestamp'].astype('int64')
-        # ------------------------------------------------
-        
-        numericos = ['open', 'high', 'low', 'close', 'volume', 'taker_buy_base']
-        df[numericos] = df[numericos].apply(pd.to_numeric, errors='coerce')
-        
-        # CVD
-        df['delta_volume'] = df['taker_buy_base'] - (df['volume'] - df['taker_buy_base'])
-        df['CVD'] = df['delta_volume'].cumsum()
-        
-        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume', 'CVD']]
-
-    def buscar_candles(self, par, timeframe, mercado="FUTUROS", limit=1000):
-        try:
-            if mercado == "FUTUROS":
-                klines = self.client.futures_klines(symbol=par, interval=timeframe, limit=limit)
-            else:
-                klines = self.client.get_klines(symbol=par, interval=timeframe, limit=limit)
-            return self._tratar_df(klines)
-        except: return None
+        df = pd.DataFrame(klines, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume', 
+            'close_time', 'quote_av', 'trades', 'tb_base_av', 'tb_quote_av', 'ignore'
+        ])
+        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        df = df.astype(float)
+        return df
 
     def buscar_melhor_preco_book(self, par, lado):
         try:
-            book = self.client.futures_order_book(symbol=par, limit=5)
-            if lado == 'BUY': return float(book['bids'][0][0])
-            else: return float(book['asks'][0][0])
-        except: return 0
+            book = self.client.futures_order_book(symbol=par)
+            if lado == "BUY": return float(book['bids'][0][0]) # Melhor Bid
+            else: return float(book['asks'][0][0]) # Melhor Ask
+        except: return self.obter_preco_atual(par)
 
-    def obter_precisao_moeda(self, par):
+    def obter_preco_atual(self, par):
+        try:
+            ticker = self.client.futures_symbol_ticker(symbol=par)
+            return float(ticker['price'])
+        except: return 0.0
+
+    def calcular_qtd_correta(self, par, valor_usdt, preco_atual):
         try:
             info = self.client.futures_exchange_info()
-            for s in info['symbols']:
-                if s['symbol'] == par:
-                    step = float(next(f['stepSize'] for f in s['filters'] if f['filterType'] == 'LOT_SIZE'))
-                    tick = float(next(f['tickSize'] for f in s['filters'] if f['filterType'] == 'PRICE_FILTER'))
-                    return step, tick
-            return None, None
-        except: return None, None
-
-    def calcular_qtd_correta(self, par, valor_usdt, preco):
-        step, _ = self.obter_precisao_moeda(par)
-        if not step: return 0
-        qtd = (valor_usdt / preco) // step * step
-        casas = len(str(step).split('.')[1]) if '.' in str(step) else 0
-        return float(f"{qtd:.{casas}f}")
-
-    def colocar_ordem_limit(self, par, lado, qtd, preco, alavancagem=5):
-        try:
-            self.client.futures_change_leverage(symbol=par, leverage=alavancagem)
-            print(f"🕒 Ordem LIMIT {lado} em {par} a {preco}...")
-            return self.client.futures_create_order(
-                symbol=par, side=lado, type='LIMIT', timeInForce='GTC',
-                quantity=qtd, price=str(preco)
-            )
-        except Exception as e:
-            print(f"❌ Erro Ordem: {e}")
-            return None
-
-    def colocar_stop_loss(self, par, lado_stop, qtd, preco_stop):
-        try:
-            print(f"🛡️ STOP LOSS {lado_stop} a {preco_stop}...")
-            return self.client.futures_create_order(
-                symbol=par, side=lado_stop, type='STOP_MARKET',
-                stopPrice=str(preco_stop), closePosition=True
-            )
-        except: return None
+            symbol_info = next((s for s in info['symbols'] if s['symbol'] == par), None)
             
+            qtd_bruta = valor_usdt / preco_atual
+            
+            # Ajuste de precisão (stepSize)
+            step_size = 0.001 # Default
+            for f in symbol_info['filters']:
+                if f['filterType'] == 'LOT_SIZE':
+                    step_size = float(f['stepSize'])
+            
+            precision = int(round(-math.log(step_size, 10), 0))
+            return round(qtd_bruta, precision)
+        except: return 0
+
     def cancelar_todas_ordens(self, par):
         try:
             self.client.futures_cancel_all_open_orders(symbol=par)
-        except: pass
+            return True
+        except: return False
+
+    def colocar_stop_loss(self, par, lado, qtd, preco_stop):
+        try:
+            self.client.futures_create_order(
+                symbol=par,
+                side=lado,
+                type='STOP_MARKET',
+                stopPrice=preco_stop,
+                quantity=qtd,
+                reduceOnly=True
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Erro Stop Loss: {e}")
+            return False
+
+    def obter_posicao_atual(self, par):
+        """
+        Retorna detalhes da posição aberta na Binance.
+        Retorna: dict {'qtd': float, 'preco_entrada': float, 'pnl': float, 'lado': int} ou None se zerado.
+        """
+        try:
+            positions = self.client.futures_position_information(symbol=par)
+            # A API retorna uma lista, pegamos o item correto
+            for p in positions:
+                if p['symbol'] == par:
+                    amt = float(p['positionAmt'])
+                    entry_price = float(p['entryPrice'])
+                    unrealized_pnl = float(p['unRealizedProfit'])
+                    
+                    if amt == 0:
+                        return None # Sem posição
+                    
+                    # 1 = Long (Qtd positiva), 2 = Short (Qtd negativa)
+                    lado = 1 if amt > 0 else 2
+                    
+                    return {
+                        'qtd': abs(amt), # Sempre positivo para cálculos
+                        'qtd_real': amt, # Com sinal
+                        'preco_entrada': entry_price,
+                        'pnl_usd': unrealized_pnl,
+                        'lado': lado
+                    }
+            return None
+        except Exception as e:
+            print(f"⚠️ Erro ao ler posição Binance: {e}")
+            return None
+        
+    def colocar_ordem_limit(self, par, lado, qtd, preco):
+        try:
+            return self.client.futures_create_order(
+                symbol=par, side=lado, type='LIMIT', 
+                timeInForce='GTC', quantity=qtd, price=preco
+            )
+        except: return None

@@ -1,5 +1,5 @@
 {
-    "ultima_atualizacao": "21:11:28",
+    "ultima_atualizacao": "13:05:32",
     "saldo_atual": 207.9175838645313,
     "moedas": [
         {
@@ -12,12 +12,14 @@
         },
         {
             "par": "WLDUSDT",
-            "preco": 0.6302,
-            "adx": 20.7,
+            "preco": 0.634,
+            "adx": 20.3,
             "sinal": "NEUTRO",
             "confianca": 0,
-            "status_adx": "LIVE"
+            "status_adx": "REAL-SYNC"
         }
     ],
-    "saldo_total": 202.350150730592
+    "saldo_total": 137.66635661,
+    "lucro_dia_usd": 27.96236952000001,
+    "lucro_dia_pct": 25.48892730494834
 }
